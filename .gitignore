@@ -6,3 +6,15 @@ build/
 dist/
 *.egg-info/
 
+# Internal agent and reasoning artifacts are not repository documentation.
+.agents/
+.claude/
+.codex/
+docs/agent/
+docs/council/
+docs/internal/
+docs/plans/
+docs/superpowers/
+**/AGENTS.md
+**/CLAUDE.md
+**/GEMINI.md
