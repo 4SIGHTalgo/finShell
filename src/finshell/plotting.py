@@ -177,12 +177,17 @@ class CPCVDiagnosticsPlot(PipelineComponent):
                     "validate_total": validate_total,
                     "test_total": test_total,
                     "bootstrap_totals": bootstrap_totals,
+                    "bootstrap_fit": _normal_fit(bootstrap_totals),
                 }
             )
 
+        validate_totals = [item["validate_total"] for item in fold_diagnostics]
+        test_totals = [item["test_total"] for item in fold_diagnostics]
         diagnostics = {
-            "validate_totals": [item["validate_total"] for item in fold_diagnostics],
-            "test_totals": [item["test_total"] for item in fold_diagnostics],
+            "validate_totals": validate_totals,
+            "test_totals": test_totals,
+            "validate_fit": _normal_fit(validate_totals),
+            "test_fit": _normal_fit(test_totals),
             "folds": fold_diagnostics,
             "include_fold_bootstrap": bool(self.config.include_fold_bootstrap),
         }
@@ -209,24 +214,116 @@ class CPCVDiagnosticsPlot(PipelineComponent):
         plt = _load_pyplot()
         figure, axes = plt.subplots(1, 2, figsize=(11, 4.5), constrained_layout=True)
         heldout_axis, bootstrap_axis = axes
-        heldout = [diagnostics["validate_totals"], diagnostics["test_totals"]]
-        heldout_axis.boxplot(heldout, tick_labels=["Validate", "Test"], widths=0.45)
-        for position, values in enumerate(heldout, start=1):
-            heldout_axis.scatter([position] * len(values), values, color="#2563eb", alpha=0.75, zorder=3)
-        heldout_axis.axhline(0.0, color="#6b7280", linewidth=0.8)
+        _plot_bell_curve(
+            heldout_axis,
+            diagnostics["validate_totals"],
+            diagnostics["validate_fit"],
+            label="Validate",
+            color="#2563eb",
+        )
+        _plot_bell_curve(
+            heldout_axis,
+            diagnostics["test_totals"],
+            diagnostics["test_fit"],
+            label="Test",
+            color="#dc2626",
+        )
+        heldout_axis.axvline(0.0, color="#6b7280", linewidth=0.8)
         heldout_axis.set_title("CPCV held-out outcomes")
-        heldout_axis.set_ylabel("Aggregate outcome")
+        heldout_axis.set_xlabel("Aggregate outcome")
+        heldout_axis.set_ylabel("Density")
+        heldout_axis.legend(frameon=False)
 
-        bootstrap_sets = [item["bootstrap_totals"] for item in diagnostics["folds"] if item["bootstrap_totals"]]
-        bootstrap_labels = [item["fold"] for item in diagnostics["folds"] if item["bootstrap_totals"]]
-        if bootstrap_sets:
-            bootstrap_axis.boxplot(bootstrap_sets, tick_labels=bootstrap_labels, widths=0.5)
-            bootstrap_axis.tick_params(axis="x", rotation=45)
+        bootstrap_folds = [item for item in diagnostics["folds"] if item["bootstrap_totals"]]
+        if bootstrap_folds:
+            colors = plt.get_cmap("tab10").colors
+            for index, item in enumerate(bootstrap_folds):
+                _plot_bell_curve(
+                    bootstrap_axis,
+                    item["bootstrap_totals"],
+                    item["bootstrap_fit"],
+                    label=item["fold"],
+                    color=colors[index % len(colors)],
+                )
+            bootstrap_axis.legend(frameon=False)
         else:
             bootstrap_axis.text(0.5, 0.5, "Fold bootstrap disabled", ha="center", va="center")
-        bootstrap_axis.axhline(0.0, color="#6b7280", linewidth=0.8)
+        bootstrap_axis.axvline(0.0, color="#6b7280", linewidth=0.8)
         bootstrap_axis.set_title("Per-fold train bootstrap")
-        bootstrap_axis.set_ylabel("Aggregate outcome")
+        bootstrap_axis.set_xlabel("Aggregate outcome")
+        bootstrap_axis.set_ylabel("Density")
+        figure.savefig(figure_path, dpi=self.config.dpi, format=self.config.image_format.lower())
+        plt.close(figure)
+
+
+class NullTestDiagnosticsPlot(PipelineComponent):
+    def __init__(
+        self,
+        config: PlotConfig | None = None,
+        *,
+        name: str = "null_test_diagnostics_plot",
+        data_key: str = "development_data",
+    ) -> None:
+        super().__init__(name=name)
+        self.config = config or PlotConfig()
+        self.data_key = data_key
+
+    def run(self, context: PipelineContext) -> ComponentResult:
+        if not self.config.enabled:
+            return _skipped(self.name, "plotting_disabled")
+        frame, roles = _frame_and_roles(context, self.data_key)
+        if not roles.outcome or roles.outcome not in frame.columns:
+            return self._unavailable("missing_outcome_role")
+        diagnostics = context.state.get("null_test_diagnostics")
+        if not isinstance(diagnostics, dict):
+            return self._unavailable("missing_null_test_diagnostics")
+
+        outcomes = pd.to_numeric(frame[roles.outcome], errors="coerce")
+        selected_indices = [int(value) for value in diagnostics.get("selected_row_indices", [])]
+        sampled_indices = [
+            [int(value) for value in path]
+            for path in diagnostics.get("random_row_indices", [])[: self.config.max_paths]
+        ]
+        real_equity = _series_cumsum(outcomes.iloc[selected_indices])
+        random_paths = [_series_cumsum(outcomes.iloc[indices]) for indices in sampled_indices]
+        plot_diagnostics = {
+            "real_equity": real_equity,
+            "random_equity_paths": random_paths,
+            "selected_row_indices": selected_indices,
+            "sampled_row_indices": sampled_indices,
+            "random_seed": diagnostics.get("random_seed"),
+        }
+        context.state["null_plot_diagnostics"] = plot_diagnostics
+        figure_path = _figure_path(context, self.config, "null_test_equity_paths")
+        self._render(figure_path, real_equity, random_paths)
+        return ComponentResult(
+            component=self.name,
+            passed=True,
+            summary={
+                "skipped": False,
+                "selected_count": len(selected_indices),
+                "displayed_random_paths": len(random_paths),
+            },
+            artifacts={"figure": figure_path},
+        )
+
+    def _unavailable(self, reason: str) -> ComponentResult:
+        if self.config.strict:
+            return ComponentResult(component=self.name, passed=False, summary={"fail_reasons": [reason]})
+        return _skipped(self.name, reason)
+
+    def _render(self, figure_path: Path, real_equity: list[float], random_paths: list[list[float]]) -> None:
+        plt = _load_pyplot()
+        figure, axis = plt.subplots(figsize=(8.5, 5), constrained_layout=True)
+        for path in random_paths:
+            axis.plot(path, color="#94a3b8", alpha=0.18, linewidth=0.9)
+        if real_equity:
+            axis.plot(real_equity, color="black", linewidth=2.2, label="Selected trades")
+            axis.legend(frameon=False)
+        axis.axhline(0.0, color="#6b7280", linewidth=0.8)
+        axis.set_title("Selected trades vs same-count null paths")
+        axis.set_xlabel("Trade number")
+        axis.set_ylabel("Cumulative outcome")
         figure.savefig(figure_path, dpi=self.config.dpi, format=self.config.image_format.lower())
         plt.close(figure)
 
@@ -257,8 +354,47 @@ def _partition_total(outcomes: pd.Series, indices: list[int]) -> float:
     return float(value) if pd.notna(value) else float("nan")
 
 
+def _normal_fit(values: list[float]) -> dict[str, float]:
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if not finite.size:
+        return {"mean": float("nan"), "std": float("nan")}
+    std = float(np.std(finite, ddof=1)) if finite.size > 1 else 0.0
+    return {"mean": float(np.mean(finite)), "std": std}
+
+
+def _plot_bell_curve(
+    axis: Any,
+    values: list[float],
+    fit: dict[str, float],
+    *,
+    label: str,
+    color: Any,
+) -> None:
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if not finite.size:
+        return
+    bins = min(12, max(3, int(np.ceil(np.sqrt(finite.size)))))
+    axis.hist(finite, bins=bins, density=True, color=color, alpha=0.12)
+    mean = float(fit["mean"])
+    std = float(fit["std"])
+    if np.isfinite(std) and std > 0.0:
+        x_values = np.linspace(mean - 4.0 * std, mean + 4.0 * std, 240)
+        density = np.exp(-0.5 * ((x_values - mean) / std) ** 2) / (std * np.sqrt(2.0 * np.pi))
+        axis.plot(x_values, density, color=color, linewidth=2.0, label=f"{label} normal fit")
+    else:
+        axis.axvline(mean, color=color, linewidth=2.0, label=f"{label} degenerate fit")
+    axis.plot(finite, np.zeros_like(finite), "|", color=color, alpha=0.8, markersize=8)
+
+
 def _rounded_cumsum(values: np.ndarray) -> list[float]:
     return [float(value) for value in np.round(np.cumsum(values), 12).tolist()]
+
+
+def _series_cumsum(values: pd.Series) -> list[float]:
+    finite = values[np.isfinite(values.to_numpy(dtype=float))].to_numpy(dtype=float)
+    return _rounded_cumsum(finite)
 
 
 def _value_key(value: Any) -> str:

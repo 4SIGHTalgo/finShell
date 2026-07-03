@@ -66,6 +66,24 @@ def test_null_suite_is_deterministic_for_same_seed(tmp_path: Path) -> None:
     assert result_a.summary["random_totals"] == result_b.summary["random_totals"]
 
 
+def test_null_suite_retains_exact_sampled_row_positions(tmp_path: Path) -> None:
+    outcomes = [-0.02, float("nan"), 0.0, 0.01, 0.02, 0.03]
+    selected = [False, False, False, True, True, True]
+    context = _context(tmp_path, outcomes, selected)
+
+    result = NullTestSuite(NullTestConfig(random_simulations=5, random_seed=17)).run(context)
+
+    diagnostics = context.state["null_test_diagnostics"]
+    frame = context.state["development_data"]
+    assert diagnostics["selected_row_indices"] == [3, 4, 5]
+    reconstructed = [
+        float(frame.iloc[indices]["net_return"].sum())
+        for indices in diagnostics["random_row_indices"]
+    ]
+    assert reconstructed == result.summary["random_totals"]
+    assert diagnostics["random_seed"] == 17
+
+
 def test_null_suite_fails_closed_without_selected_or_outcome_roles(tmp_path: Path) -> None:
     context = _context(tmp_path, [0.1, -0.1, 0.2], [True, False, True])
     context.state["roles"] = ColumnRoleMap(timestamp="event_time", label="tb_label")

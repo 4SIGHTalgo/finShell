@@ -51,22 +51,25 @@ class NullTestSuite(PipelineComponent):
         valid = outcomes.notna().to_numpy()
         selected_mask = selected_mask & valid
         values = outcomes.loc[valid].to_numpy(dtype=float)
+        valid_row_indices = np.flatnonzero(valid)
         valid_selected = selected_mask[valid]
         selected_count = int(valid_selected.sum())
+        selected_row_indices = valid_row_indices[valid_selected].astype(int).tolist()
         observed_total = float(values[valid_selected].sum()) if selected_count else 0.0
         fail_reasons: list[str] = []
+        random_row_indices: list[list[int]] = []
         if selected_count <= 0:
             fail_reasons.append("no_selected_rows")
             random_totals = np.asarray([], dtype=float)
         else:
             rng = np.random.default_rng(int(self.config.random_seed))
-            random_totals = np.asarray(
-                [
-                    float(values[rng.choice(len(values), size=selected_count, replace=False)].sum())
-                    for _ in range(int(self.config.random_simulations))
-                ],
-                dtype=float,
-            )
+            totals: list[float] = []
+            for _ in range(int(self.config.random_simulations)):
+                sampled_valid_positions = rng.choice(len(values), size=selected_count, replace=False)
+                totals.append(float(values[sampled_valid_positions].sum()))
+                sampled_rows = valid_row_indices[sampled_valid_positions].astype(int).tolist()
+                random_row_indices.append(sorted(sampled_rows))
+            random_totals = np.asarray(totals, dtype=float)
         if random_totals.size:
             random_p95 = float(np.quantile(random_totals, 0.95))
             percentile = float(np.mean(random_totals <= observed_total))
@@ -91,6 +94,13 @@ class NullTestSuite(PipelineComponent):
             "random_simulations": int(self.config.random_simulations),
             "random_totals": [float(value) for value in random_totals.tolist()],
             "fail_reasons": sorted(set(fail_reasons)),
+        }
+        context.state["null_test_diagnostics"] = {
+            "selected_row_indices": selected_row_indices,
+            "random_row_indices": random_row_indices,
+            "random_seed": int(self.config.random_seed),
+            "sampling_rule": "same_count_without_replacement",
+            "valid_row_count": int(len(valid_row_indices)),
         }
         context.state["null_test_summary"] = summary
         return ComponentResult(component=self.name, passed=not fail_reasons, summary=summary)
