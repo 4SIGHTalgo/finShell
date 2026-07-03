@@ -15,7 +15,13 @@ from finshell.ingestion import ColumnRoleMap, DataIngestConfig, DataIngestor
 from finshell.label_audit import LabelAuditConfig, LabelAuditor
 from finshell.null_tests import NullTestConfig
 from finshell.plotting import PlotConfig
-from finshell.study_plotting import render_label_audit, render_oos_audit, render_selector_cv
+from finshell.risk_metrics import compute_risk_metrics
+from finshell.study_plotting import (
+    render_economic_validation,
+    render_label_audit,
+    render_oos_audit,
+    render_selector_cv,
+)
 from finshell.triple_barrier import TripleBarrierComparator, TripleBarrierConfig
 
 
@@ -379,6 +385,126 @@ class ValidationStudy:
             artifacts={"figure": figure} if self.plots.enabled else {},
             figure=figure if self.plots.enabled else None,
         )
+
+    def validate_economics(
+        self,
+        *,
+        paths: int = 500,
+        block_bars: int = 8,
+        random_seed: int = 42,
+    ) -> StageReport:
+        self._require_stage("oos_audit")
+        if paths < 1:
+            raise ValueError("paths must be >= 1")
+        if block_bars < 1:
+            raise ValueError("block_bars must be >= 1")
+        scored = self.context.state["quarantine_scored_data"]
+        roles = self.context.state["roles"]
+        selected = scored["selected"].astype(bool).to_numpy()
+        outcomes = pd.to_numeric(scored[roles.outcome], errors="coerce").to_numpy(dtype=float)
+        source_returns = outcomes[selected & np.isfinite(outcomes)]
+        if not len(source_returns):
+            raise ValueError("economic validation requires selected finite OOS outcomes")
+
+        from finshell.plotting import _block_bootstrap_equity_paths
+
+        effective_block = min(int(block_bars), len(source_returns))
+        bootstrap_paths = _block_bootstrap_equity_paths(
+            source_returns,
+            replicates=int(paths),
+            block_bars=effective_block,
+            random_seed=int(random_seed),
+        )
+        path_array = np.asarray(bootstrap_paths, dtype=float)
+        median_path = np.median(path_array, axis=0)
+        terminal = path_array[:, -1]
+        geometry = self._barrier_geometry(scored)
+        diagnostics = {
+            "source_returns": [float(value) for value in source_returns.tolist()],
+            "bootstrap_paths": bootstrap_paths,
+            "median_path": [float(value) for value in median_path.tolist()],
+            "barrier_geometry": geometry,
+            "block_bars": effective_block,
+            "random_seed": int(random_seed),
+        }
+        self.context.state["economic_study_diagnostics"] = diagnostics
+        risk = compute_risk_metrics(
+            source_returns,
+            min_selected=1,
+            annualization_factor=1.0,
+            cdar_quantile=0.95,
+        )
+        terminal_p05, terminal_p50, terminal_p95 = np.quantile(terminal, [0.05, 0.50, 0.95])
+        fail_reasons: list[str] = []
+        if float(terminal_p50) <= 0.0:
+            fail_reasons.append("non_positive_median_terminal_result")
+
+        figure = self.context.artifact_path("plots/04_economic_monte_carlo.png")
+        if self.plots.enabled:
+            render_economic_validation(
+                figure,
+                barrier_geometry=geometry,
+                bootstrap_paths=bootstrap_paths[: int(self.plots.max_paths)],
+                median_path=[float(value) for value in median_path.tolist()],
+                dpi=int(self.plots.dpi),
+            )
+        summary = {
+            "source_trade_count": int(len(source_returns)),
+            "bootstrap_paths": int(paths),
+            "block_bars": int(effective_block),
+            "terminal_p05": float(terminal_p05),
+            "terminal_p50": float(terminal_p50),
+            "terminal_p95": float(terminal_p95),
+            "loss_probability": float(np.mean(terminal < 0.0)),
+            "mean_return": float(risk["mean_return"]),
+            "sharpe_like": float(risk["sharpe_like"]),
+            "max_drawdown": float(risk["max_drawdown"]),
+            "fail_reasons": fail_reasons,
+        }
+        self._completed.add("economic_validation")
+        return StageReport(
+            stage="economic_validation",
+            passed=not fail_reasons,
+            summary=summary,
+            artifacts={"figure": figure} if self.plots.enabled else {},
+            figure=figure if self.plots.enabled else None,
+        )
+
+    def _barrier_geometry(self, scored: pd.DataFrame) -> dict[str, Any]:
+        if self._barrier_config is None:
+            raise ValueError("triple-barrier configuration is unavailable")
+        roles = self.context.state["roles"]
+        selected_indices = np.flatnonzero(scored["selected"].astype(bool).to_numpy())
+        horizon = int(self._barrier_config.vertical_bars)
+        eligible = [int(index) for index in selected_indices if int(index) + horizon < len(scored)]
+        entry_index = eligible[0] if eligible else int(selected_indices[0])
+        vertical_index = min(len(scored) - 1, entry_index + horizon)
+        entry_price = float(scored.iloc[entry_index][roles.close])
+        side = 1.0
+        if roles.side and roles.side in scored.columns:
+            side = -1.0 if float(scored.iloc[entry_index][roles.side]) < 0.0 else 1.0
+        if side > 0.0:
+            profit_barrier = entry_price * (1.0 + float(self._barrier_config.profit_take))
+            stop_barrier = entry_price * (1.0 - float(self._barrier_config.stop_loss))
+        else:
+            profit_barrier = entry_price * (1.0 - float(self._barrier_config.profit_take))
+            stop_barrier = entry_price * (1.0 + float(self._barrier_config.stop_loss))
+        price_path = pd.to_numeric(
+            scored.iloc[entry_index : vertical_index + 1][roles.close],
+            errors="coerce",
+        ).to_numpy(dtype=float)
+        return {
+            "entry_index": entry_index,
+            "vertical_index": vertical_index,
+            "vertical_x": int(vertical_index - entry_index),
+            "entry_price": entry_price,
+            "upper_barrier": float(max(profit_barrier, stop_barrier)),
+            "lower_barrier": float(min(profit_barrier, stop_barrier)),
+            "profit_barrier": float(profit_barrier),
+            "stop_barrier": float(stop_barrier),
+            "side": int(side),
+            "price_path": [float(value) for value in price_path.tolist()],
+        }
 
     def _require_stage(self, stage: str) -> None:
         if stage not in self._completed:

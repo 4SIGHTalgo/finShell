@@ -123,7 +123,7 @@ def test_probability_metric_plot_range_stays_bounded() -> None:
 def _trained_study(tmp_path: Path) -> fs.ValidationStudy:
     study = _audited_study(tmp_path)
     study.fit_selector(
-        fs.LogisticSelector(features=["signal_feature"], threshold=0.60, random_state=13),
+        fs.LogisticSelector(features=["signal_feature"], threshold=0.25, random_state=13),
         cpcv=fs.CPCVConfig(n_groups=6, holdout_groups=2, validate_groups=1, max_splits=4),
         bootstrap=fs.FoldBlockBootstrapConfig(replicates=4, block_bars=8, random_seed=13),
     )
@@ -159,4 +159,48 @@ def test_oos_selected_path_beats_random_p95_and_no_selector(tmp_path: Path) -> N
     assert len(diagnostics["pointwise_p95"]) == quarantine_rows
     assert len(diagnostics["no_selector_equity"]) == quarantine_rows
     assert Path(report.figure).name == "03_oos_audit.png"
+    assert Path(report.figure).stat().st_size > 0
+
+
+def _oos_study(tmp_path: Path) -> fs.ValidationStudy:
+    study = _trained_study(tmp_path)
+    study.audit_oos(
+        null_tests=fs.NullTestConfig(random_simulations=200, stored_random_paths=20, random_seed=19)
+    )
+    return study
+
+
+def test_economic_validation_requires_oos_audit(tmp_path: Path) -> None:
+    study = _trained_study(tmp_path)
+
+    with pytest.raises(fs.StageOrderError, match="oos_audit"):
+        study.validate_economics()
+
+
+def test_economic_validation_bootstraps_selected_oos_and_barrier_geometry(tmp_path: Path) -> None:
+    study = _oos_study(tmp_path)
+
+    report = study.validate_economics(paths=200, block_bars=4, random_seed=23)
+
+    assert report.stage == "economic_validation"
+    assert report.passed is True
+    assert report.summary["source_trade_count"] == study.context.state["oos_study_diagnostics"][
+        "favorable_count"
+    ]
+    assert report.summary["terminal_p05"] <= report.summary["terminal_p50"]
+    assert report.summary["terminal_p50"] <= report.summary["terminal_p95"]
+    assert report.summary["terminal_p50"] > 0.0
+    bootstrap_paths = np.asarray(
+        study.context.state["economic_study_diagnostics"]["bootstrap_paths"]
+    )
+    assert np.ptp(bootstrap_paths[:, -1]) > 0.0
+    geometry = study.context.state["economic_study_diagnostics"]["barrier_geometry"]
+    assert geometry["upper_barrier"] == pytest.approx(
+        geometry["entry_price"] * (1.0 + 0.01)
+    )
+    assert geometry["lower_barrier"] == pytest.approx(
+        geometry["entry_price"] * (1.0 - 0.01)
+    )
+    assert geometry["vertical_x"] == 1
+    assert Path(report.figure).name == "04_economic_monte_carlo.png"
     assert Path(report.figure).stat().st_size > 0

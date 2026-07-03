@@ -135,3 +135,58 @@ def render_oos_audit(
     axis.legend(frameon=False)
     figure.savefig(path, dpi=dpi, format=path.suffix.lstrip("."))
     plt.close(figure)
+
+
+def render_economic_validation(
+    path: Path,
+    *,
+    barrier_geometry: dict[str, Any],
+    bootstrap_paths: list[list[float]],
+    median_path: list[float],
+    dpi: int,
+) -> None:
+    from finshell.plotting import _load_pyplot
+
+    plt = _load_pyplot()
+    figure, axes = plt.subplots(1, 2, figsize=(12, 4.8), constrained_layout=True)
+    barrier_axis, monte_carlo_axis = axes
+    price_path = barrier_geometry["price_path"]
+    x_values = list(range(len(price_path)))
+    barrier_axis.plot(x_values, price_path, color="black", marker="o", linewidth=1.8, label="Close")
+    barrier_axis.scatter([0], [barrier_geometry["entry_price"]], color="#2563eb", zorder=4, label="Entry")
+    barrier_axis.axhline(
+        barrier_geometry["profit_barrier"],
+        color="#16a34a",
+        linestyle="--",
+        linewidth=1.8,
+        label="Profit barrier",
+    )
+    barrier_axis.axhline(
+        barrier_geometry["stop_barrier"],
+        color="#dc2626",
+        linestyle="--",
+        linewidth=1.8,
+        label="Stop barrier",
+    )
+    barrier_axis.axvline(
+        barrier_geometry["vertical_x"],
+        color="#7c3aed",
+        linestyle=":",
+        linewidth=2.0,
+        label="Vertical barrier",
+    )
+    barrier_axis.set_title("Representative triple-barrier event")
+    barrier_axis.set_xlabel("Bars after entry")
+    barrier_axis.set_ylabel("Price")
+    barrier_axis.legend(frameon=False)
+
+    for bootstrap_path in bootstrap_paths:
+        monte_carlo_axis.plot(bootstrap_path, color="#60a5fa", alpha=0.14, linewidth=0.8)
+    monte_carlo_axis.plot(median_path, color="black", linewidth=2.3, label="Median path")
+    monte_carlo_axis.axhline(0.0, color="#64748b", linewidth=0.8)
+    monte_carlo_axis.set_title("Selected OOS block bootstrap")
+    monte_carlo_axis.set_xlabel("Selected trade")
+    monte_carlo_axis.set_ylabel("Cumulative outcome")
+    monte_carlo_axis.legend(frameon=False)
+    figure.savefig(path, dpi=dpi, format=path.suffix.lstrip("."))
+    plt.close(figure)
