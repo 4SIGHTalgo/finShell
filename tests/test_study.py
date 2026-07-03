@@ -118,3 +118,45 @@ def test_probability_metric_plot_range_stays_bounded() -> None:
     assert axis_limits is not None
     assert axis_limits("average_precision") == (0.0, 1.05)
     assert axis_limits("total_return") is None
+
+
+def _trained_study(tmp_path: Path) -> fs.ValidationStudy:
+    study = _audited_study(tmp_path)
+    study.fit_selector(
+        fs.LogisticSelector(features=["signal_feature"], threshold=0.60, random_state=13),
+        cpcv=fs.CPCVConfig(n_groups=6, holdout_groups=2, validate_groups=1, max_splits=4),
+        bootstrap=fs.FoldBlockBootstrapConfig(replicates=4, block_bars=8, random_seed=13),
+    )
+    return study
+
+
+def test_oos_audit_requires_selector_validation(tmp_path: Path) -> None:
+    study = _audited_study(tmp_path)
+
+    with pytest.raises(fs.StageOrderError, match="selector_validation"):
+        study.audit_oos()
+
+
+def test_oos_selected_path_beats_random_p95_and_no_selector(tmp_path: Path) -> None:
+    study = _trained_study(tmp_path)
+    coefficients_before = study.context.state["selector_model"].coef_.copy()
+
+    report = study.audit_oos(
+        null_tests=fs.NullTestConfig(random_simulations=300, stored_random_paths=40, random_seed=17)
+    )
+
+    assert report.stage == "oos_audit"
+    assert report.passed is True
+    assert report.summary["selected_total"] > report.summary["random_final_p95"]
+    assert report.summary["selected_total"] > report.summary["no_selector_total"]
+    assert report.summary["p_value"] <= 0.05
+    assert report.summary["selected_count"] > 0
+    assert np.array_equal(coefficients_before, study.context.state["selector_model"].coef_)
+    assert study.context.state["quarantine_scored"] is True
+    diagnostics = study.context.state["oos_study_diagnostics"]
+    quarantine_rows = len(study.context.state["quarantine_data"])
+    assert len(diagnostics["selected_equity"]) == quarantine_rows
+    assert len(diagnostics["pointwise_p95"]) == quarantine_rows
+    assert len(diagnostics["no_selector_equity"]) == quarantine_rows
+    assert Path(report.figure).name == "03_oos_audit.png"
+    assert Path(report.figure).stat().st_size > 0

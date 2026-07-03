@@ -15,7 +15,7 @@ from finshell.ingestion import ColumnRoleMap, DataIngestConfig, DataIngestor
 from finshell.label_audit import LabelAuditConfig, LabelAuditor
 from finshell.null_tests import NullTestConfig
 from finshell.plotting import PlotConfig
-from finshell.study_plotting import render_label_audit, render_selector_cv
+from finshell.study_plotting import render_label_audit, render_oos_audit, render_selector_cv
 from finshell.triple_barrier import TripleBarrierComparator, TripleBarrierConfig
 
 
@@ -297,6 +297,83 @@ class ValidationStudy:
         self._completed.add("selector_validation")
         return StageReport(
             stage="selector_validation",
+            passed=not fail_reasons,
+            summary=summary,
+            artifacts={"figure": figure} if self.plots.enabled else {},
+            figure=figure if self.plots.enabled else None,
+        )
+
+    def audit_oos(self, *, null_tests: NullTestConfig | None = None) -> StageReport:
+        self._require_stage("selector_validation")
+        quarantine = self.context.state["quarantine_data"].copy()
+        roles = self.context.state["roles"]
+        selector = self.context.state["selector_spec"]
+        estimator = self.context.state["selector_model"]
+        features = quarantine[list(selector.features)].to_numpy(dtype=float)
+        finite_features = np.isfinite(features).all(axis=1)
+        scores = np.full(len(quarantine), np.nan, dtype=float)
+        scores[finite_features] = _positive_scores(estimator, features[finite_features])
+        selected = np.isfinite(scores) & (scores >= float(selector.threshold))
+        outcomes = pd.to_numeric(quarantine[roles.outcome], errors="coerce").to_numpy(dtype=float)
+        null_config = null_tests or NullTestConfig()
+        diagnostics = _same_count_null(
+            outcomes,
+            selected,
+            simulations=int(null_config.random_simulations),
+            stored_paths=int(null_config.stored_random_paths),
+            random_seed=int(null_config.random_seed),
+        )
+        no_selector_increments = np.where(np.isfinite(outcomes), outcomes, 0.0)
+        no_selector_equity = np.cumsum(no_selector_increments)
+        no_selector_total = float(no_selector_equity[-1]) if len(no_selector_equity) else 0.0
+        diagnostics["selected_equity"] = diagnostics.pop("real_equity")
+        diagnostics["no_selector_equity"] = [
+            float(value) for value in np.round(no_selector_equity, 12).tolist()
+        ]
+        self.context.state["oos_study_diagnostics"] = diagnostics
+        scored = quarantine.copy()
+        scored["model_score"] = scores
+        scored["selected"] = selected
+        self.context.state["quarantine_scored_data"] = scored
+        self.context.state["quarantine_scored"] = True
+
+        fail_reasons: list[str] = []
+        if diagnostics["favorable_count"] <= 0:
+            fail_reasons.append("no_oos_selected_rows")
+        if diagnostics["real_total"] <= diagnostics["random_final_p95"]:
+            fail_reasons.append("selected_path_not_above_random_p95")
+        if diagnostics["real_total"] <= no_selector_total:
+            fail_reasons.append("selected_path_not_above_no_selector")
+        if diagnostics["percentile"] < float(null_config.min_random_percentile):
+            fail_reasons.append("random_percentile_below_threshold")
+        if diagnostics["p_value"] > float(null_config.max_p_value):
+            fail_reasons.append("p_value_above_threshold")
+
+        figure = self.context.artifact_path("plots/03_oos_audit.png")
+        if self.plots.enabled:
+            render_oos_audit(
+                figure,
+                selected_equity=diagnostics["selected_equity"],
+                random_paths=diagnostics["random_equity_paths"],
+                pointwise_p95=diagnostics["pointwise_p95"],
+                no_selector_equity=diagnostics["no_selector_equity"],
+                dpi=int(self.plots.dpi),
+            )
+        selected_values = outcomes[selected & np.isfinite(outcomes)]
+        summary = {
+            "quarantine_rows": int(len(quarantine)),
+            "selected_count": int(diagnostics["favorable_count"]),
+            "selected_total": float(diagnostics["real_total"]),
+            "selected_mean": float(np.mean(selected_values)) if len(selected_values) else float("nan"),
+            "no_selector_total": no_selector_total,
+            "random_final_p95": float(diagnostics["random_final_p95"]),
+            "percentile": float(diagnostics["percentile"]),
+            "p_value": float(diagnostics["p_value"]),
+            "fail_reasons": fail_reasons,
+        }
+        self._completed.add("oos_audit")
+        return StageReport(
+            stage="oos_audit",
             passed=not fail_reasons,
             summary=summary,
             artifacts={"figure": figure} if self.plots.enabled else {},

@@ -102,3 +102,36 @@ def metric_axis_limits(column: str) -> tuple[float, float] | None:
     if column in {"average_precision", "roc_auc", "prevalence"}:
         return (0.0, 1.05)
     return None
+
+
+def render_oos_audit(
+    path: Path,
+    *,
+    selected_equity: list[float],
+    random_paths: list[list[float]],
+    pointwise_p95: list[float],
+    no_selector_equity: list[float],
+    dpi: int,
+) -> None:
+    from finshell.plotting import _load_pyplot
+
+    plt = _load_pyplot()
+    figure, axis = plt.subplots(figsize=(9, 5.2), constrained_layout=True)
+    for random_path in random_paths:
+        axis.plot(random_path, color="#94a3b8", alpha=0.16, linewidth=0.8)
+    axis.plot(pointwise_p95, color="#dc2626", linestyle="--", linewidth=1.8, label="Random p95")
+    axis.plot(
+        no_selector_equity,
+        color="#2563eb",
+        linestyle="--",
+        linewidth=1.8,
+        label="No selector",
+    )
+    axis.plot(selected_equity, color="black", linewidth=2.3, label="Selected OOS")
+    axis.axhline(0.0, color="#64748b", linewidth=0.8)
+    axis.set_title("OOS selected trades vs controls")
+    axis.set_xlabel("Quarantine event")
+    axis.set_ylabel("Cumulative outcome")
+    axis.legend(frameon=False)
+    figure.savefig(path, dpi=dpi, format=path.suffix.lstrip("."))
+    plt.close(figure)
