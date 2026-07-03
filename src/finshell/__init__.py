@@ -15,6 +15,7 @@ from finshell.holdout import HoldoutConfig, HoldoutSplitter
 from finshell.label_audit import LabelAuditConfig, LabelAuditor
 from finshell.null_tests import NullTestConfig, NullTestSuite
 from finshell.pbo import PBOAnalyzer, PBOConfig, binomial_upper_confidence_bound
+from finshell.plotting import LabelDiagnosticsPlot, PlotConfig
 from finshell.risk_metrics import RiskMetrics, RiskMetricsConfig, compute_risk_metrics
 from finshell.triple_barrier import TripleBarrierComparator, TripleBarrierConfig
 
@@ -38,6 +39,7 @@ __all__ = [
     "HoldoutSplitter",
     "LabelAuditConfig",
     "LabelAuditor",
+    "LabelDiagnosticsPlot",
     "NullTestConfig",
     "NullTestSuite",
     "PBOAnalyzer",
@@ -45,6 +47,7 @@ __all__ = [
     "PipelineComponent",
     "PipelineContext",
     "PipelineRunResult",
+    "PlotConfig",
     "RiskMetrics",
     "RiskMetricsConfig",
     "TripleBarrierComparator",
