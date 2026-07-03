@@ -23,9 +23,10 @@ from finshell.plotting import (
     TripleBarrierDiagnosticsPlot,
 )
 from finshell.risk_metrics import RiskMetrics, RiskMetricsConfig, compute_risk_metrics
+from finshell.study import StageOrderError, StageReport, ValidationStudy
 from finshell.triple_barrier import TripleBarrierComparator, TripleBarrierConfig
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 __all__ = [
     "ColumnRoleMap",
@@ -58,9 +59,12 @@ __all__ = [
     "PlotConfig",
     "RiskMetrics",
     "RiskMetricsConfig",
+    "StageOrderError",
+    "StageReport",
     "TripleBarrierComparator",
     "TripleBarrierConfig",
     "TripleBarrierDiagnosticsPlot",
+    "ValidationStudy",
     "binomial_upper_confidence_bound",
     "compute_risk_metrics",
     "infer_block_bars",
