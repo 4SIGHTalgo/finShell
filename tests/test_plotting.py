@@ -197,3 +197,33 @@ def test_null_plot_consumes_exact_statistical_samples(tmp_path: Path) -> None:
     figure_path = Path(result.artifacts["figure"])
     assert figure_path.name == "null_test_equity_paths.png"
     assert figure_path.stat().st_size > 0
+
+
+def test_triple_barrier_plot_bootstraps_paths_and_stores_pointwise_median(tmp_path: Path) -> None:
+    module = importlib.import_module("finshell.plotting")
+    component_type = getattr(module, "TripleBarrierDiagnosticsPlot", None)
+
+    assert component_type is not None
+    context = PipelineContext(artifact_dir=tmp_path)
+    context.state["triple_barrier_result"] = pd.DataFrame(
+        {"barrier_return": [0.02, -0.01, 0.03, -0.02, 0.01, 0.04]}
+    )
+    config = module.PlotConfig(
+        enabled=True,
+        max_paths=7,
+        bootstrap_block_bars=2,
+        random_seed=19,
+    )
+
+    result = component_type(config).run(context)
+
+    diagnostics = context.state["triple_barrier_plot_diagnostics"]
+    paths = np.asarray(diagnostics["bootstrap_equity_paths"])
+    assert paths.shape == (7, 6)
+    assert diagnostics["median_equity_path"] == pytest.approx(
+        np.median(paths, axis=0).tolist()
+    )
+    assert diagnostics["block_bars"] == 2
+    figure_path = Path(result.artifacts["figure"])
+    assert figure_path.name == "triple_barrier_bootstrap_paths.png"
+    assert figure_path.stat().st_size > 0

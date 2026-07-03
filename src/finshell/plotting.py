@@ -19,6 +19,7 @@ class PlotConfig:
     image_format: str = "png"
     dpi: int = 150
     max_paths: int = 100
+    bootstrap_block_bars: int = 8
     include_fold_bootstrap: bool = True
     strict: bool = False
     random_seed: int = 42
@@ -32,6 +33,8 @@ class PlotConfig:
             raise ValueError("dpi must be >= 1")
         if self.max_paths < 1:
             raise ValueError("max_paths must be >= 1")
+        if self.bootstrap_block_bars < 1:
+            raise ValueError("bootstrap_block_bars must be >= 1")
 
 
 class LabelDiagnosticsPlot(PipelineComponent):
@@ -328,6 +331,80 @@ class NullTestDiagnosticsPlot(PipelineComponent):
         plt.close(figure)
 
 
+class TripleBarrierDiagnosticsPlot(PipelineComponent):
+    def __init__(
+        self,
+        config: PlotConfig | None = None,
+        *,
+        name: str = "triple_barrier_diagnostics_plot",
+        result_key: str = "triple_barrier_result",
+    ) -> None:
+        super().__init__(name=name)
+        self.config = config or PlotConfig()
+        self.result_key = result_key
+
+    def run(self, context: PipelineContext) -> ComponentResult:
+        if not self.config.enabled:
+            return _skipped(self.name, "plotting_disabled")
+        result = context.state.get(self.result_key)
+        if not isinstance(result, pd.DataFrame) or "barrier_return" not in result.columns:
+            return self._unavailable("missing_triple_barrier_returns")
+        values = pd.to_numeric(result["barrier_return"], errors="coerce").to_numpy(dtype=float)
+        values = values[np.isfinite(values)]
+        if not values.size:
+            return self._unavailable("no_finite_triple_barrier_returns")
+
+        block_bars = min(int(self.config.bootstrap_block_bars), len(values))
+        paths = _block_bootstrap_equity_paths(
+            values,
+            replicates=int(self.config.max_paths),
+            block_bars=block_bars,
+            random_seed=int(self.config.random_seed),
+        )
+        median_path = np.median(np.asarray(paths, dtype=float), axis=0).tolist()
+        diagnostics = {
+            "bootstrap_equity_paths": paths,
+            "median_equity_path": [float(value) for value in median_path],
+            "block_bars": block_bars,
+            "random_seed": int(self.config.random_seed),
+            "sampling_rule": "moving_block_bootstrap",
+            "source_return_count": int(len(values)),
+        }
+        context.state["triple_barrier_plot_diagnostics"] = diagnostics
+        figure_path = _figure_path(context, self.config, "triple_barrier_bootstrap_paths")
+        self._render(figure_path, paths, median_path)
+        return ComponentResult(
+            component=self.name,
+            passed=True,
+            summary={
+                "skipped": False,
+                "bootstrap_paths": len(paths),
+                "block_bars": block_bars,
+                "source_return_count": len(values),
+            },
+            artifacts={"figure": figure_path},
+        )
+
+    def _unavailable(self, reason: str) -> ComponentResult:
+        if self.config.strict:
+            return ComponentResult(component=self.name, passed=False, summary={"fail_reasons": [reason]})
+        return _skipped(self.name, reason)
+
+    def _render(self, figure_path: Path, paths: list[list[float]], median_path: list[float]) -> None:
+        plt = _load_pyplot()
+        figure, axis = plt.subplots(figsize=(8.5, 5), constrained_layout=True)
+        for path in paths:
+            axis.plot(path, color="#60a5fa", alpha=0.16, linewidth=0.8)
+        axis.plot(median_path, color="black", linewidth=2.4, label="Median path")
+        axis.axhline(0.0, color="#6b7280", linewidth=0.8)
+        axis.set_title("Triple-barrier economic bootstrap paths")
+        axis.set_xlabel("Event number")
+        axis.set_ylabel("Cumulative barrier return")
+        axis.legend(frameon=False)
+        figure.savefig(figure_path, dpi=self.config.dpi, format=self.config.image_format.lower())
+        plt.close(figure)
+
+
 def _skipped(component: str, reason: str) -> ComponentResult:
     return ComponentResult(component=component, passed=True, summary={"skipped": True, "reason": reason})
 
@@ -395,6 +472,25 @@ def _rounded_cumsum(values: np.ndarray) -> list[float]:
 def _series_cumsum(values: pd.Series) -> list[float]:
     finite = values[np.isfinite(values.to_numpy(dtype=float))].to_numpy(dtype=float)
     return _rounded_cumsum(finite)
+
+
+def _block_bootstrap_equity_paths(
+    values: np.ndarray,
+    *,
+    replicates: int,
+    block_bars: int,
+    random_seed: int,
+) -> list[list[float]]:
+    rng = np.random.default_rng(random_seed)
+    paths: list[list[float]] = []
+    for _ in range(replicates):
+        sampled: list[float] = []
+        while len(sampled) < len(values):
+            start = int(rng.integers(0, len(values)))
+            sampled.extend(values[start : min(len(values), start + block_bars)].tolist())
+        path_values = np.asarray(sampled[: len(values)], dtype=float)
+        paths.append(_rounded_cumsum(path_values))
+    return paths
 
 
 def _value_key(value: Any) -> str:

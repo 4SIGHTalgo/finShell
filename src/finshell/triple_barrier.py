@@ -84,6 +84,7 @@ def _compute_triple_barrier(frame: pd.DataFrame, roles: ColumnRoleMap, config: T
     labels: list[int] = []
     reasons: list[str] = []
     exit_indices: list[int] = []
+    barrier_returns: list[float] = []
     for index in range(len(working)):
         entry = close[index]
         current_side = side[index]
@@ -94,6 +95,7 @@ def _compute_triple_barrier(frame: pd.DataFrame, roles: ColumnRoleMap, config: T
             labels.append(0)
             reasons.append("invalid_entry")
             exit_indices.append(index)
+            barrier_returns.append(float("nan"))
             continue
         for path_index in range(index + 1, min(len(working), index + int(config.vertical_bars) + 1)):
             if current_side > 0:
@@ -112,14 +114,27 @@ def _compute_triple_barrier(frame: pd.DataFrame, roles: ColumnRoleMap, config: T
                 reason = "stop_loss"
                 exit_index = path_index
                 break
+        if reason == "take_profit":
+            barrier_return = float(config.profit_take)
+        elif reason == "stop_loss":
+            barrier_return = -float(config.stop_loss)
+        else:
+            exit_close = close[exit_index]
+            barrier_return = (
+                float(current_side * (exit_close / entry - 1.0))
+                if np.isfinite(exit_close)
+                else float("nan")
+            )
         labels.append(label)
         reasons.append(reason)
         exit_indices.append(exit_index)
+        barrier_returns.append(barrier_return)
     return pd.DataFrame(
         {
             "barrier_label": labels,
             "exit_reason": reasons,
             "exit_index": exit_indices,
+            "barrier_return": barrier_returns,
         }
     )
 

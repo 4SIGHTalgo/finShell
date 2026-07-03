@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import pytest
 
 from finshell.core import PipelineContext
 from finshell.ingestion import ColumnRoleMap
@@ -86,3 +88,40 @@ def test_triple_barrier_can_be_omitted(tmp_path: Path) -> None:
 
     assert result.passed is True
     assert result.summary["skipped"] is True
+
+
+def test_triple_barrier_records_realized_economic_returns(tmp_path: Path) -> None:
+    take_profit = _context(
+        tmp_path / "take_profit",
+        high=[100, 103, 101],
+        low=[99, 100, 100],
+        close=[100, 101, 101],
+    )
+    stop_loss = _context(
+        tmp_path / "stop_loss",
+        high=[100, 101, 101],
+        low=[99, 97, 100],
+        close=[100, 100, 100],
+    )
+    timeout_short = _context(
+        tmp_path / "timeout_short",
+        high=[100, 101, 101],
+        low=[99, 99, 99],
+        close=[100, 99.5, 99],
+        side=[-1, -1, -1],
+    )
+    invalid = _context(
+        tmp_path / "invalid",
+        high=[100, 101],
+        low=[99, 99],
+        close=[float("nan"), 100],
+    )
+    config = TripleBarrierConfig(profit_take=0.02, stop_loss=0.02, vertical_bars=2)
+
+    for context in [take_profit, stop_loss, timeout_short, invalid]:
+        TripleBarrierComparator(config).run(context)
+
+    assert take_profit.state["triple_barrier_result"].loc[0, "barrier_return"] == pytest.approx(0.02)
+    assert stop_loss.state["triple_barrier_result"].loc[0, "barrier_return"] == pytest.approx(-0.02)
+    assert timeout_short.state["triple_barrier_result"].loc[0, "barrier_return"] == pytest.approx(0.01)
+    assert np.isnan(invalid.state["triple_barrier_result"].loc[0, "barrier_return"])

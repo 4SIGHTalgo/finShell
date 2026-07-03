@@ -15,7 +15,13 @@ from finshell.holdout import HoldoutConfig, HoldoutSplitter
 from finshell.label_audit import LabelAuditConfig, LabelAuditor
 from finshell.null_tests import NullTestConfig, NullTestSuite
 from finshell.pbo import PBOAnalyzer, PBOConfig, binomial_upper_confidence_bound
-from finshell.plotting import CPCVDiagnosticsPlot, LabelDiagnosticsPlot, NullTestDiagnosticsPlot, PlotConfig
+from finshell.plotting import (
+    CPCVDiagnosticsPlot,
+    LabelDiagnosticsPlot,
+    NullTestDiagnosticsPlot,
+    PlotConfig,
+    TripleBarrierDiagnosticsPlot,
+)
 from finshell.risk_metrics import RiskMetrics, RiskMetricsConfig, compute_risk_metrics
 from finshell.triple_barrier import TripleBarrierComparator, TripleBarrierConfig
 
@@ -54,6 +60,7 @@ __all__ = [
     "RiskMetricsConfig",
     "TripleBarrierComparator",
     "TripleBarrierConfig",
+    "TripleBarrierDiagnosticsPlot",
     "binomial_upper_confidence_bound",
     "compute_risk_metrics",
     "infer_block_bars",
