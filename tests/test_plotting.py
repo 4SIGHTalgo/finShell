@@ -5,8 +5,11 @@ import importlib.util
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
+from finshell.bootstrap import FoldBlockBootstrap, FoldBlockBootstrapConfig
 from finshell.core import PipelineContext
+from finshell.cpcv import CPCVConfig, CPCVPurgeEmbargo
 from finshell.ingestion import ColumnRoleMap
 
 
@@ -78,3 +81,57 @@ def test_label_plot_writes_deterministic_equity_and_class_balance(tmp_path: Path
     assert first.state["label_plot_diagnostics"]["random_equity_paths"] == second.state[
         "label_plot_diagnostics"
     ]["random_equity_paths"]
+
+
+def _cpcv_context(artifact_dir: Path) -> PipelineContext:
+    context = PipelineContext(artifact_dir=artifact_dir)
+    frame = pd.DataFrame(
+        {
+            "event_time": pd.date_range("2026-01-01", periods=24, freq="1h", tz="UTC"),
+            "label": [index % 3 - 1 for index in range(24)],
+            "outcome": [(index - 8) / 100.0 for index in range(24)],
+        }
+    )
+    context.state["development_data"] = frame
+    context.state["roles"] = ColumnRoleMap(
+        timestamp="event_time",
+        label="label",
+        outcome="outcome",
+    )
+    CPCVPurgeEmbargo(
+        CPCVConfig(n_groups=4, holdout_groups=2, validate_groups=1, max_splits=2)
+    ).run(context)
+    FoldBlockBootstrap(
+        FoldBlockBootstrapConfig(replicates=3, block_bars=2, random_seed=11)
+    ).run(context)
+    return context
+
+
+def test_cpcv_plot_uses_declared_partitions_and_bootstrap_paths(tmp_path: Path) -> None:
+    module = importlib.import_module("finshell.plotting")
+    component_type = getattr(module, "CPCVDiagnosticsPlot", None)
+
+    assert component_type is not None
+    context = _cpcv_context(tmp_path)
+    result = component_type(
+        module.PlotConfig(enabled=True, include_fold_bootstrap=True)
+    ).run(context)
+
+    frame = context.state["development_data"]
+    outcomes = frame["outcome"]
+    folds = context.state["cpcv_folds"]
+    plans = context.state["bootstrap_plans"]
+    diagnostics = context.state["cpcv_plot_diagnostics"]
+    assert diagnostics["validate_totals"] == pytest.approx(
+        [float(outcomes.iloc[fold.validate_indices].sum()) for fold in folds]
+    )
+    assert diagnostics["test_totals"] == pytest.approx(
+        [float(outcomes.iloc[fold.test_indices].sum()) for fold in folds]
+    )
+    for fold_diagnostic, plan in zip(diagnostics["folds"], plans):
+        assert fold_diagnostic["bootstrap_totals"] == pytest.approx(
+            [float(outcomes.iloc[path.indices].sum()) for path in plan.paths]
+        )
+    figure_path = Path(result.artifacts["figure"])
+    assert figure_path.name == "cpcv_distributions.png"
+    assert figure_path.stat().st_size > 0

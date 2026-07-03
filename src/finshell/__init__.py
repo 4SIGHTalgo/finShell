@@ -15,7 +15,7 @@ from finshell.holdout import HoldoutConfig, HoldoutSplitter
 from finshell.label_audit import LabelAuditConfig, LabelAuditor
 from finshell.null_tests import NullTestConfig, NullTestSuite
 from finshell.pbo import PBOAnalyzer, PBOConfig, binomial_upper_confidence_bound
-from finshell.plotting import LabelDiagnosticsPlot, PlotConfig
+from finshell.plotting import CPCVDiagnosticsPlot, LabelDiagnosticsPlot, PlotConfig
 from finshell.risk_metrics import RiskMetrics, RiskMetricsConfig, compute_risk_metrics
 from finshell.triple_barrier import TripleBarrierComparator, TripleBarrierConfig
 
@@ -29,6 +29,7 @@ __all__ = [
     "CPCVConfig",
     "CPCVFold",
     "CPCVPurgeEmbargo",
+    "CPCVDiagnosticsPlot",
     "DataIngestConfig",
     "DataIngestor",
     "FoldBlockBootstrap",
