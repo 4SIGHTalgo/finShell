@@ -25,7 +25,7 @@ from finshell.plotting import (
 from finshell.risk_metrics import RiskMetrics, RiskMetricsConfig, compute_risk_metrics
 from finshell.triple_barrier import TripleBarrierComparator, TripleBarrierConfig
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "ColumnRoleMap",

@@ -84,6 +84,22 @@ def test_null_suite_retains_exact_sampled_row_positions(tmp_path: Path) -> None:
     assert diagnostics["random_seed"] == 17
 
 
+def test_null_suite_bounds_stored_paths_without_dropping_inference_totals(tmp_path: Path) -> None:
+    context = _context(
+        tmp_path,
+        outcomes=[-0.02, -0.01, 0.0, 0.01, 0.02, 0.03],
+        selected=[False, False, False, True, True, True],
+    )
+
+    result = NullTestSuite(
+        NullTestConfig(random_simulations=20, stored_random_paths=3, random_seed=17)
+    ).run(context)
+
+    assert len(result.summary["random_totals"]) == 20
+    assert len(context.state["null_test_diagnostics"]["random_row_indices"]) == 3
+    assert context.state["null_test_diagnostics"]["stored_random_paths"] == 3
+
+
 def test_null_suite_fails_closed_without_selected_or_outcome_roles(tmp_path: Path) -> None:
     context = _context(tmp_path, [0.1, -0.1, 0.2], [True, False, True])
     context.state["roles"] = ColumnRoleMap(timestamp="event_time", label="tb_label")

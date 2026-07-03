@@ -100,6 +100,8 @@ class FullPipeline:
         cpcv: Any | None = None,
         bootstrap: Any | None = None,
         null_tests: Any | None = None,
+        triple_barrier: Any | None = None,
+        plots: Any | None = None,
         risk_metrics: Any | None = None,
         fail_fast: bool = True,
     ) -> FullPipeline:
@@ -109,17 +111,39 @@ class FullPipeline:
         from finshell.ingestion import DataIngestConfig, DataIngestor
         from finshell.label_audit import LabelAuditConfig, LabelAuditor
         from finshell.null_tests import NullTestConfig, NullTestSuite
+        from finshell.plotting import (
+            CPCVDiagnosticsPlot,
+            LabelDiagnosticsPlot,
+            NullTestDiagnosticsPlot,
+            TripleBarrierDiagnosticsPlot,
+        )
         from finshell.risk_metrics import RiskMetrics, RiskMetricsConfig
+        from finshell.triple_barrier import TripleBarrierComparator
 
+        plot_enabled = bool(getattr(plots, "enabled", False))
         components: list[PipelineComponent] = [
             DataIngestor(DataIngestConfig(source=source, roles=roles)),
             LabelAuditor(label_audit or LabelAuditConfig()),
-            HoldoutSplitter(holdout or HoldoutConfig()),
-            CPCVPurgeEmbargo(cpcv or CPCVConfig()),
-            FoldBlockBootstrap(bootstrap or FoldBlockBootstrapConfig()),
-            NullTestSuite(null_tests or NullTestConfig()),
-            RiskMetrics(risk_metrics or RiskMetricsConfig()),
         ]
+        if plot_enabled:
+            components.append(LabelDiagnosticsPlot(plots))
+        components.extend(
+            [
+                HoldoutSplitter(holdout or HoldoutConfig()),
+                CPCVPurgeEmbargo(cpcv or CPCVConfig()),
+                FoldBlockBootstrap(bootstrap or FoldBlockBootstrapConfig()),
+            ]
+        )
+        if plot_enabled:
+            components.append(CPCVDiagnosticsPlot(plots))
+        components.append(NullTestSuite(null_tests or NullTestConfig()))
+        if plot_enabled:
+            components.append(NullTestDiagnosticsPlot(plots))
+        if triple_barrier is not None:
+            components.append(TripleBarrierComparator(triple_barrier))
+            if plot_enabled and bool(getattr(triple_barrier, "enabled", True)):
+                components.append(TripleBarrierDiagnosticsPlot(plots))
+        components.append(RiskMetrics(risk_metrics or RiskMetricsConfig()))
         return cls.from_components(components, artifact_dir=artifact_dir, fail_fast=fail_fast)
 
     def run(self, context: PipelineContext | None = None) -> PipelineRunResult:

@@ -13,6 +13,7 @@ from finshell.ingestion import ColumnRoleMap
 @dataclass(frozen=True, slots=True)
 class NullTestConfig:
     random_simulations: int = 512
+    stored_random_paths: int = 100
     random_seed: int = 42
     min_random_percentile: float = 0.95
     max_p_value: float = 0.05
@@ -21,6 +22,8 @@ class NullTestConfig:
     def __post_init__(self) -> None:
         if self.random_simulations < 1:
             raise ValueError("random_simulations must be >= 1")
+        if self.stored_random_paths < 0:
+            raise ValueError("stored_random_paths must be >= 0")
         if not 0.0 < self.min_random_percentile <= 1.0:
             raise ValueError("min_random_percentile must be in (0, 1]")
         if not 0.0 <= self.max_p_value <= 1.0:
@@ -67,8 +70,9 @@ class NullTestSuite(PipelineComponent):
             for _ in range(int(self.config.random_simulations)):
                 sampled_valid_positions = rng.choice(len(values), size=selected_count, replace=False)
                 totals.append(float(values[sampled_valid_positions].sum()))
-                sampled_rows = valid_row_indices[sampled_valid_positions].astype(int).tolist()
-                random_row_indices.append(sorted(sampled_rows))
+                if len(random_row_indices) < int(self.config.stored_random_paths):
+                    sampled_rows = valid_row_indices[sampled_valid_positions].astype(int).tolist()
+                    random_row_indices.append(sorted(sampled_rows))
             random_totals = np.asarray(totals, dtype=float)
         if random_totals.size:
             random_p95 = float(np.quantile(random_totals, 0.95))
@@ -101,6 +105,7 @@ class NullTestSuite(PipelineComponent):
             "random_seed": int(self.config.random_seed),
             "sampling_rule": "same_count_without_replacement",
             "valid_row_count": int(len(valid_row_indices)),
+            "stored_random_paths": int(len(random_row_indices)),
         }
         context.state["null_test_summary"] = summary
         return ComponentResult(component=self.name, passed=not fail_reasons, summary=summary)
