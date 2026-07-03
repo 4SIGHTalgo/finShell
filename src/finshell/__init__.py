@@ -23,7 +23,7 @@ from finshell.plotting import (
     TripleBarrierDiagnosticsPlot,
 )
 from finshell.risk_metrics import RiskMetrics, RiskMetricsConfig, compute_risk_metrics
-from finshell.study import StageOrderError, StageReport, ValidationStudy
+from finshell.study import LogisticSelector, StageOrderError, StageReport, ValidationStudy
 from finshell.triple_barrier import TripleBarrierComparator, TripleBarrierConfig
 
 __version__ = "0.3.0"
@@ -48,6 +48,7 @@ __all__ = [
     "LabelAuditConfig",
     "LabelAuditor",
     "LabelDiagnosticsPlot",
+    "LogisticSelector",
     "NullTestConfig",
     "NullTestDiagnosticsPlot",
     "NullTestSuite",

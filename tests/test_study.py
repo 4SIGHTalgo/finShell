@@ -4,8 +4,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 import finshell as fs
+import finshell.study_plotting as study_plotting
 
 
 def synthetic_frame(rows: int = 240) -> pd.DataFrame:
@@ -59,3 +61,60 @@ def test_label_audit_generates_target_null_envelope_and_class_balance(tmp_path: 
     assert len(diagnostics["pointwise_p95"]) == len(study.context.state["development_data"])
     assert Path(report.figure).name == "01_label_audit.png"
     assert Path(report.figure).stat().st_size > 0
+
+
+def _audited_study(tmp_path: Path) -> fs.ValidationStudy:
+    study = fs.ValidationStudy(synthetic_frame(), roles=study_roles(), artifact_dir=tmp_path)
+    study.audit_label(
+        fs.TripleBarrierConfig(profit_take=0.01, stop_loss=0.01, vertical_bars=1),
+        null_tests=fs.NullTestConfig(random_simulations=200, stored_random_paths=20, random_seed=7),
+    )
+    return study
+
+
+def test_selector_training_requires_label_audit(tmp_path: Path) -> None:
+    study = fs.ValidationStudy(synthetic_frame(), roles=study_roles(), artifact_dir=tmp_path)
+
+    with pytest.raises(fs.StageOrderError, match="label_audit"):
+        study.fit_selector(fs.LogisticSelector(features=["signal_feature"]))
+
+
+def test_selector_rejects_label_and_outcome_features(tmp_path: Path) -> None:
+    study = _audited_study(tmp_path)
+
+    with pytest.raises(ValueError, match="role or target columns"):
+        study.fit_selector(fs.LogisticSelector(features=["finshell_outcome"]))
+
+
+def test_selector_fits_inside_cpcv_bootstrap_train_rows_only(tmp_path: Path) -> None:
+    study = _audited_study(tmp_path)
+
+    report = study.fit_selector(
+        fs.LogisticSelector(features=["signal_feature"], threshold=0.60, random_state=11),
+        cpcv=fs.CPCVConfig(n_groups=6, holdout_groups=2, validate_groups=1, max_splits=4),
+        bootstrap=fs.FoldBlockBootstrapConfig(replicates=4, block_bars=8, random_seed=11),
+    )
+
+    assert report.stage == "selector_validation"
+    assert report.passed is True
+    assert report.summary["valid_bootstrap_fits"] == 16
+    assert report.summary["mean_validate_total_return"] > 0.0
+    assert report.summary["mean_test_total_return"] > 0.0
+    for audit in study.context.state["selector_fit_audit"]:
+        assert set(audit["fit_indices"]).isdisjoint(audit["validate_indices"])
+        assert set(audit["fit_indices"]).isdisjoint(audit["test_indices"])
+    assert study.context.state["quarantine_scored"] is False
+    assert study.context.state["selector_final_fit_rows"] == list(
+        range(len(study.context.state["development_data"]))
+    )
+    metrics = study.context.state["selector_cv_metrics"]
+    assert set(metrics["partition"]) == {"validate", "test"}
+    assert Path(report.figure).name == "02_cpcv_selector.png"
+    assert Path(report.figure).stat().st_size > 0
+
+
+def test_probability_metric_plot_range_stays_bounded() -> None:
+    axis_limits = getattr(study_plotting, "metric_axis_limits", None)
+    assert axis_limits is not None
+    assert axis_limits("average_precision") == (0.0, 1.05)
+    assert axis_limits("total_return") is None
