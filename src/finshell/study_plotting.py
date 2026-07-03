@@ -61,41 +61,54 @@ def render_selector_cv(path: Path, *, metrics: Any, dpi: int) -> None:
     plt = _load_pyplot()
     figure, axes = plt.subplots(1, 2, figsize=(12, 4.8), constrained_layout=True)
     colors = {"validate": "#2563eb", "test": "#dc2626"}
-    for axis, column, title in (
-        (axes[0], "total_return", "Selected economic return"),
-        (axes[1], "average_precision", "Average precision"),
-    ):
-        for partition in ("validate", "test"):
-            values = metrics.loc[metrics["partition"].eq(partition), column].to_numpy(dtype=float)
-            values = values[np.isfinite(values)]
-            if not len(values):
-                continue
-            color = colors[partition]
-            bins = min(12, max(3, int(np.ceil(np.sqrt(len(values))))))
-            axis.hist(values, bins=bins, density=True, color=color, alpha=0.12)
-            mean = float(np.mean(values))
-            std = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
-            if std > 0.0:
-                x_values = np.linspace(mean - 4.0 * std, mean + 4.0 * std, 240)
-                axis.plot(
-                    x_values,
-                    _normal_pdf(x_values, mean, std),
-                    color=color,
-                    linewidth=2.0,
-                    label=f"{partition} fit",
-                )
-            else:
-                axis.axvline(mean, color=color, linewidth=2.0, label=f"{partition} degenerate")
-            axis.plot(values, np.zeros_like(values), "|", color=color, alpha=0.8, markersize=8)
-        axis.set_title(title)
-        axis.set_xlabel(column.replace("_", " "))
-        axis.set_ylabel("Density")
-        limits = metric_axis_limits(column)
-        if limits is not None:
-            axis.set_xlim(*limits)
-        axis.legend(frameon=False)
+    for partition in ("validate", "test"):
+        values = metrics.loc[metrics["partition"].eq(partition), "total_return"].to_numpy(dtype=float)
+        values = values[np.isfinite(values)]
+        if not len(values):
+            continue
+        color = colors[partition]
+        bins = min(12, max(3, int(np.ceil(np.sqrt(len(values))))))
+        axes[0].hist(values, bins=bins, density=True, color=color, alpha=0.12)
+        _plot_normal_fit(axes[0], values, color=color, label=partition)
+    axes[0].set_title("CPCV held-out return distributions")
+    axes[0].set_xlabel("total return")
+    axes[0].set_ylabel("Density")
+    axes[0].legend(frameon=False)
+
+    fold_colors = plt.get_cmap("tab10")
+    validate = metrics.loc[metrics["partition"].eq("validate")]
+    for color_index, (fold, fold_metrics) in enumerate(validate.groupby("fold", sort=True)):
+        values = fold_metrics["total_return"].to_numpy(dtype=float)
+        values = values[np.isfinite(values)]
+        if not len(values):
+            continue
+        color = fold_colors(color_index % 10)
+        _plot_normal_fit(axes[1], values, color=color, label=str(fold))
+    axes[1].set_title("Per-fold block-bootstrap distributions")
+    axes[1].set_xlabel("validation total return")
+    axes[1].set_ylabel("Density")
+    axes[1].legend(frameon=False, fontsize="small")
     figure.savefig(path, dpi=dpi, format=path.suffix.lstrip("."))
     plt.close(figure)
+
+
+def _plot_normal_fit(axis: Any, values: Any, *, color: Any, label: str) -> None:
+    import numpy as np
+
+    mean = float(np.mean(values))
+    std = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
+    if std > 0.0:
+        x_values = np.linspace(mean - 4.0 * std, mean + 4.0 * std, 240)
+        axis.plot(
+            x_values,
+            _normal_pdf(x_values, mean, std),
+            color=color,
+            linewidth=2.0,
+            label=f"{label} fit",
+        )
+    else:
+        axis.axvline(mean, color=color, linewidth=2.0, label=f"{label} degenerate")
+    axis.plot(values, np.zeros_like(values), "|", color=color, alpha=0.8, markersize=8)
 
 
 def metric_axis_limits(column: str) -> tuple[float, float] | None:
