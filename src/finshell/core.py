@@ -88,6 +88,40 @@ class FullPipeline:
             fail_fast=payload.get("fail_fast", True),
         )
 
+    @classmethod
+    def validation_pipeline(
+        cls,
+        *,
+        source: Any,
+        roles: Any,
+        artifact_dir: Path | str = Path("outputs/finshell"),
+        label_audit: Any | None = None,
+        holdout: Any | None = None,
+        cpcv: Any | None = None,
+        bootstrap: Any | None = None,
+        null_tests: Any | None = None,
+        risk_metrics: Any | None = None,
+        fail_fast: bool = True,
+    ) -> FullPipeline:
+        from finshell.bootstrap import FoldBlockBootstrap, FoldBlockBootstrapConfig
+        from finshell.cpcv import CPCVConfig, CPCVPurgeEmbargo
+        from finshell.holdout import HoldoutConfig, HoldoutSplitter
+        from finshell.ingestion import DataIngestConfig, DataIngestor
+        from finshell.label_audit import LabelAuditConfig, LabelAuditor
+        from finshell.null_tests import NullTestConfig, NullTestSuite
+        from finshell.risk_metrics import RiskMetrics, RiskMetricsConfig
+
+        components: list[PipelineComponent] = [
+            DataIngestor(DataIngestConfig(source=source, roles=roles)),
+            LabelAuditor(label_audit or LabelAuditConfig()),
+            HoldoutSplitter(holdout or HoldoutConfig()),
+            CPCVPurgeEmbargo(cpcv or CPCVConfig()),
+            FoldBlockBootstrap(bootstrap or FoldBlockBootstrapConfig()),
+            NullTestSuite(null_tests or NullTestConfig()),
+            RiskMetrics(risk_metrics or RiskMetricsConfig()),
+        ]
+        return cls.from_components(components, artifact_dir=artifact_dir, fail_fast=fail_fast)
+
     def run(self, context: PipelineContext | None = None) -> PipelineRunResult:
         active_context = context or PipelineContext(artifact_dir=self.artifact_dir)
         results: list[ComponentResult] = []
@@ -117,4 +151,3 @@ class FullPipeline:
             components=results,
             manifest=manifest,
         )
-
