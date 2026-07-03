@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import importlib
 import importlib.util
 from pathlib import Path
@@ -24,6 +25,20 @@ def test_plotting_module_exposes_opt_in_configuration() -> None:
     assert config.enabled is False
     assert config.output_subdir == "plots"
     assert config.max_paths == 100
+
+
+def test_missing_matplotlib_error_uses_normal_install_instructions(monkeypatch) -> None:
+    module = importlib.import_module("finshell.plotting")
+    original_import = builtins.__import__
+
+    def block_matplotlib(name, *args, **kwargs):
+        if name == "matplotlib":
+            raise ImportError("blocked for test")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", block_matplotlib)
+    with pytest.raises(RuntimeError, match="pip install --force-reinstall finShell"):
+        module._load_pyplot()
 
 
 def _label_context(artifact_dir: Path) -> PipelineContext:

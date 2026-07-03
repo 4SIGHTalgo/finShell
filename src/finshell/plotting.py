@@ -512,5 +512,5 @@ def _load_pyplot() -> Any:
         matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt
     except ImportError as exc:
-        raise RuntimeError('plotting requires the optional dependency: pip install "finShell[plots]"') from exc
+        raise RuntimeError("plotting requires Matplotlib: pip install --force-reinstall finShell") from exc
     return plt
