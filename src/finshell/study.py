@@ -280,13 +280,19 @@ class ValidationStudy:
         self.context.state["selector_model"] = final_estimator
         self.context.state["selector_spec"] = selector
         self.context.state["selector_cv_metrics"] = metrics
+        nested_distributions = _build_nested_cv_distributions(metrics, folds)
+        self.context.state["selector_cv_nested_distributions"] = nested_distributions
         self.context.state["selector_fit_audit"] = fit_audit
         self.context.state["selector_final_fit_rows"] = [int(value) for value in final_rows.tolist()]
         self.context.state["quarantine_scored"] = False
 
         figure = self.context.artifact_path("plots/02_cpcv_selector.png")
         if self.plots.enabled:
-            render_selector_cv(figure, metrics=metrics, dpi=int(self.plots.dpi))
+            render_selector_cv(
+                figure,
+                distributions=nested_distributions,
+                dpi=int(self.plots.dpi),
+            )
         summary = {
             "fold_count": int(len(folds)),
             "bootstrap_replicates_per_fold": int(len(next(iter(plans.values())).paths)) if plans else 0,
@@ -392,12 +398,18 @@ class ValidationStudy:
         paths: int = 500,
         block_bars: int = 8,
         random_seed: int = 42,
+        initial_balance: float = 1.0,
+        upper_balance: float | None = None,
+        lower_balance: float | None = None,
+        max_trades: int | None = None,
     ) -> StageReport:
         self._require_stage("oos_audit")
         if paths < 1:
             raise ValueError("paths must be >= 1")
         if block_bars < 1:
             raise ValueError("block_bars must be >= 1")
+        if initial_balance <= 0.0:
+            raise ValueError("initial_balance must be > 0")
         scored = self.context.state["quarantine_scored_data"]
         roles = self.context.state["roles"]
         selected = scored["selected"].astype(bool).to_numpy()
@@ -406,25 +418,38 @@ class ValidationStudy:
         if not len(source_returns):
             raise ValueError("economic validation requires selected finite OOS outcomes")
 
-        from finshell.plotting import _block_bootstrap_equity_paths
-
-        effective_block = min(int(block_bars), len(source_returns))
-        bootstrap_paths = _block_bootstrap_equity_paths(
+        if self._barrier_config is None:
+            raise ValueError("triple-barrier configuration is unavailable")
+        resolved_upper = (
+            float(upper_balance)
+            if upper_balance is not None
+            else float(initial_balance) * (1.0 + float(self._barrier_config.profit_take))
+        )
+        resolved_lower = (
+            float(lower_balance)
+            if lower_balance is not None
+            else float(initial_balance) * (1.0 - float(self._barrier_config.stop_loss))
+        )
+        if not resolved_lower < float(initial_balance) < resolved_upper:
+            raise ValueError("balances must satisfy lower_balance < initial_balance < upper_balance")
+        resolved_max_trades = int(max_trades) if max_trades is not None else int(len(source_returns))
+        if resolved_max_trades < 1:
+            raise ValueError("max_trades must be >= 1")
+        simulation = _simulate_account_balance_paths(
             source_returns,
-            replicates=int(paths),
-            block_bars=effective_block,
+            paths=int(paths),
+            max_trades=resolved_max_trades,
+            block_bars=int(block_bars),
+            initial_balance=float(initial_balance),
+            upper_balance=resolved_upper,
+            lower_balance=resolved_lower,
             random_seed=int(random_seed),
         )
-        path_array = np.asarray(bootstrap_paths, dtype=float)
-        median_path = np.median(path_array, axis=0)
-        terminal = path_array[:, -1]
-        geometry = self._barrier_geometry(scored)
+        path_array = np.asarray(simulation["account_balance_paths"], dtype=float)
+        terminal = path_array[:, -1] / float(initial_balance) - 1.0
         diagnostics = {
             "source_returns": [float(value) for value in source_returns.tolist()],
-            "bootstrap_paths": bootstrap_paths,
-            "median_path": [float(value) for value in median_path.tolist()],
-            "barrier_geometry": geometry,
-            "block_bars": effective_block,
+            **simulation,
             "random_seed": int(random_seed),
         }
         self.context.state["economic_study_diagnostics"] = diagnostics
@@ -443,18 +468,30 @@ class ValidationStudy:
         if self.plots.enabled:
             render_economic_validation(
                 figure,
-                barrier_geometry=geometry,
-                bootstrap_paths=bootstrap_paths[: int(self.plots.max_paths)],
-                median_path=[float(value) for value in median_path.tolist()],
+                account_balance_paths=simulation["account_balance_paths"][: int(self.plots.max_paths)],
+                resolution_states=simulation["resolution_states"][: int(self.plots.max_paths)],
+                resolution_trades=simulation["resolution_trades"][: int(self.plots.max_paths)],
+                median_path=simulation["median_path"],
+                upper_balance=float(simulation["upper_balance"]),
+                lower_balance=float(simulation["lower_balance"]),
+                max_trades=resolved_max_trades,
+                upper_hit_probability=float(simulation["upper_hit_probability"]),
+                lower_hit_probability=float(simulation["lower_hit_probability"]),
+                vertical_probability=float(simulation["vertical_probability"]),
+                median_resolution_trades=float(simulation["median_resolution_trades"]),
                 dpi=int(self.plots.dpi),
             )
         summary = {
             "source_trade_count": int(len(source_returns)),
             "bootstrap_paths": int(paths),
-            "block_bars": int(effective_block),
+            "block_bars": int(simulation["block_bars"]),
             "terminal_p05": float(terminal_p05),
             "terminal_p50": float(terminal_p50),
             "terminal_p95": float(terminal_p95),
+            "upper_hit_probability": float(simulation["upper_hit_probability"]),
+            "lower_hit_probability": float(simulation["lower_hit_probability"]),
+            "vertical_probability": float(simulation["vertical_probability"]),
+            "median_resolution_trades": float(simulation["median_resolution_trades"]),
             "loss_probability": float(np.mean(terminal < 0.0)),
             "mean_return": float(risk["mean_return"]),
             "sharpe_like": float(risk["sharpe_like"]),
@@ -469,42 +506,6 @@ class ValidationStudy:
             artifacts={"figure": figure} if self.plots.enabled else {},
             figure=figure if self.plots.enabled else None,
         )
-
-    def _barrier_geometry(self, scored: pd.DataFrame) -> dict[str, Any]:
-        if self._barrier_config is None:
-            raise ValueError("triple-barrier configuration is unavailable")
-        roles = self.context.state["roles"]
-        selected_indices = np.flatnonzero(scored["selected"].astype(bool).to_numpy())
-        horizon = int(self._barrier_config.vertical_bars)
-        eligible = [int(index) for index in selected_indices if int(index) + horizon < len(scored)]
-        entry_index = eligible[0] if eligible else int(selected_indices[0])
-        vertical_index = min(len(scored) - 1, entry_index + horizon)
-        entry_price = float(scored.iloc[entry_index][roles.close])
-        side = 1.0
-        if roles.side and roles.side in scored.columns:
-            side = -1.0 if float(scored.iloc[entry_index][roles.side]) < 0.0 else 1.0
-        if side > 0.0:
-            profit_barrier = entry_price * (1.0 + float(self._barrier_config.profit_take))
-            stop_barrier = entry_price * (1.0 - float(self._barrier_config.stop_loss))
-        else:
-            profit_barrier = entry_price * (1.0 - float(self._barrier_config.profit_take))
-            stop_barrier = entry_price * (1.0 + float(self._barrier_config.stop_loss))
-        price_path = pd.to_numeric(
-            scored.iloc[entry_index : vertical_index + 1][roles.close],
-            errors="coerce",
-        ).to_numpy(dtype=float)
-        return {
-            "entry_index": entry_index,
-            "vertical_index": vertical_index,
-            "vertical_x": int(vertical_index - entry_index),
-            "entry_price": entry_price,
-            "upper_barrier": float(max(profit_barrier, stop_barrier)),
-            "lower_barrier": float(min(profit_barrier, stop_barrier)),
-            "profit_barrier": float(profit_barrier),
-            "stop_barrier": float(stop_barrier),
-            "side": int(side),
-            "price_path": [float(value) for value in price_path.tolist()],
-        }
 
     def _require_stage(self, stage: str) -> None:
         if stage not in self._completed:
@@ -587,3 +588,98 @@ def _partition_metric_mean(metrics: pd.DataFrame, partition: str, column: str) -
     ).to_numpy(dtype=float)
     values = values[np.isfinite(values)]
     return float(np.mean(values)) if len(values) else float("nan")
+
+
+def _simulate_account_balance_paths(
+    source_returns: np.ndarray,
+    *,
+    paths: int,
+    max_trades: int,
+    block_bars: int,
+    initial_balance: float,
+    upper_balance: float,
+    lower_balance: float,
+    random_seed: int,
+) -> dict[str, Any]:
+    values = np.asarray(source_returns, dtype=float)
+    values = values[np.isfinite(values)]
+    if not len(values):
+        raise ValueError("source_returns must contain finite values")
+    effective_block = min(int(block_bars), len(values), int(max_trades))
+    blocks = [values[start : start + effective_block] for start in range(len(values))]
+    rng = np.random.default_rng(int(random_seed))
+    simulated: list[list[float]] = []
+    states: list[str] = []
+    resolution_bars: list[int] = []
+    for _ in range(int(paths)):
+        sampled: list[float] = []
+        while len(sampled) < int(max_trades):
+            block = blocks[int(rng.integers(0, len(blocks)))]
+            for value in block:
+                sampled.append(float(value))
+                if len(sampled) >= int(max_trades):
+                    break
+        path = [float(initial_balance)]
+        state = "vertical"
+        resolved_at = int(max_trades)
+        for bar, value in enumerate(sampled, start=1):
+            level = path[-1] * (1.0 + value)
+            if level >= upper_balance:
+                level = float(upper_balance)
+                state = "upper"
+                resolved_at = bar
+            elif level <= lower_balance:
+                level = float(lower_balance)
+                state = "lower"
+                resolved_at = bar
+            path.append(float(level))
+            if state != "vertical":
+                path.extend([float(level)] * (int(max_trades) - bar))
+                break
+        simulated.append(path)
+        states.append(state)
+        resolution_bars.append(int(resolved_at))
+    path_array = np.asarray(simulated, dtype=float)
+    counts = {state: int(states.count(state)) for state in ("upper", "lower", "vertical")}
+    return {
+        "account_balance_paths": simulated,
+        "median_path": [float(value) for value in np.median(path_array, axis=0).tolist()],
+        "resolution_states": states,
+        "resolution_trades": resolution_bars,
+        "state_counts": counts,
+        "initial_balance": float(initial_balance),
+        "upper_balance": float(upper_balance),
+        "lower_balance": float(lower_balance),
+        "upper_hit_probability": float(counts["upper"] / paths),
+        "lower_hit_probability": float(counts["lower"] / paths),
+        "vertical_probability": float(counts["vertical"] / paths),
+        "median_resolution_trades": float(np.median(resolution_bars)),
+        "block_bars": int(effective_block),
+    }
+
+
+def _build_nested_cv_distributions(metrics: pd.DataFrame, folds: list[Any]) -> dict[str, Any]:
+    nested_folds: list[dict[str, Any]] = []
+    outer: dict[str, list[float]] = {"validate": [], "test": []}
+    for fold in folds:
+        fold_record: dict[str, Any] = {
+            "fold": str(fold.name),
+            "validate_group_indices": [int(value) for value in fold.validate_group_indices],
+            "test_group_indices": [int(value) for value in fold.test_group_indices],
+        }
+        for partition in ("validate", "test"):
+            values = pd.to_numeric(
+                metrics.loc[
+                    metrics["fold"].eq(fold.name) & metrics["partition"].eq(partition),
+                    "total_return",
+                ],
+                errors="coerce",
+            ).to_numpy(dtype=float)
+            values = values[np.isfinite(values)]
+            serialized = [float(value) for value in values.tolist()]
+            mean = float(np.mean(values)) if len(values) else float("nan")
+            fold_record[partition] = serialized
+            fold_record[f"{partition}_mean"] = mean
+            outer[partition].append(mean)
+        nested_folds.append(fold_record)
+    return {"metric": "total_return", "outer": outer, "folds": nested_folds}

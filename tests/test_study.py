@@ -63,10 +63,14 @@ def test_label_audit_generates_target_null_envelope_and_class_balance(tmp_path: 
     assert Path(report.figure).stat().st_size > 0
 
 
-def _audited_study(tmp_path: Path) -> fs.ValidationStudy:
+def _audited_study(tmp_path: Path, *, vertical_bars: int = 1) -> fs.ValidationStudy:
     study = fs.ValidationStudy(synthetic_frame(), roles=study_roles(), artifact_dir=tmp_path)
     study.audit_label(
-        fs.TripleBarrierConfig(profit_take=0.01, stop_loss=0.01, vertical_bars=1),
+        fs.TripleBarrierConfig(
+            profit_take=0.01,
+            stop_loss=0.01,
+            vertical_bars=vertical_bars,
+        ),
         null_tests=fs.NullTestConfig(random_simulations=200, stored_random_paths=20, random_seed=7),
     )
     return study
@@ -109,6 +113,17 @@ def test_selector_fits_inside_cpcv_bootstrap_train_rows_only(tmp_path: Path) -> 
     )
     metrics = study.context.state["selector_cv_metrics"]
     assert set(metrics["partition"]) == {"validate", "test"}
+    nested = study.context.state["selector_cv_nested_distributions"]
+    assert len(nested["folds"]) == 4
+    assert len(nested["outer"]["validate"]) == 4
+    assert len(nested["outer"]["test"]) == 4
+    for fold in nested["folds"]:
+        assert fold["validate_group_indices"]
+        assert fold["test_group_indices"]
+        assert len(fold["validate"]) == 4
+        assert len(fold["test"]) == 4
+        assert fold["validate_mean"] == pytest.approx(np.mean(fold["validate"]))
+        assert fold["test_mean"] == pytest.approx(np.mean(fold["test"]))
     assert Path(report.figure).name == "02_cpcv_selector.png"
     assert Path(report.figure).stat().st_size > 0
 
@@ -120,8 +135,8 @@ def test_probability_metric_plot_range_stays_bounded() -> None:
     assert axis_limits("total_return") is None
 
 
-def _trained_study(tmp_path: Path) -> fs.ValidationStudy:
-    study = _audited_study(tmp_path)
+def _trained_study(tmp_path: Path, *, vertical_bars: int = 1) -> fs.ValidationStudy:
+    study = _audited_study(tmp_path, vertical_bars=vertical_bars)
     study.fit_selector(
         fs.LogisticSelector(features=["signal_feature"], threshold=0.25, random_state=13),
         cpcv=fs.CPCVConfig(n_groups=6, holdout_groups=2, validate_groups=1, max_splits=4),
@@ -158,12 +173,20 @@ def test_oos_selected_path_beats_random_p95_and_no_selector(tmp_path: Path) -> N
     assert len(diagnostics["selected_equity"]) == quarantine_rows
     assert len(diagnostics["pointwise_p95"]) == quarantine_rows
     assert len(diagnostics["no_selector_equity"]) == quarantine_rows
+    quarantine_outcomes = pd.to_numeric(
+        study.context.state["quarantine_data"][study.context.state["roles"].outcome],
+        errors="coerce",
+    ).fillna(0.0)
+    np.testing.assert_allclose(
+        diagnostics["no_selector_equity"],
+        quarantine_outcomes.cumsum().to_numpy(dtype=float),
+    )
     assert Path(report.figure).name == "03_oos_audit.png"
     assert Path(report.figure).stat().st_size > 0
 
 
 def _oos_study(tmp_path: Path) -> fs.ValidationStudy:
-    study = _trained_study(tmp_path)
+    study = _trained_study(tmp_path, vertical_bars=8)
     study.audit_oos(
         null_tests=fs.NullTestConfig(random_simulations=200, stored_random_paths=20, random_seed=19)
     )
@@ -177,30 +200,58 @@ def test_economic_validation_requires_oos_audit(tmp_path: Path) -> None:
         study.validate_economics()
 
 
-def test_economic_validation_bootstraps_selected_oos_and_barrier_geometry(tmp_path: Path) -> None:
+def test_economic_validation_bootstraps_oos_account_paths_inside_barriers(tmp_path: Path) -> None:
     study = _oos_study(tmp_path)
 
-    report = study.validate_economics(paths=200, block_bars=4, random_seed=23)
+    report = study.validate_economics(
+        paths=200,
+        block_bars=4,
+        random_seed=23,
+        initial_balance=100_000.0,
+        upper_balance=102_000.0,
+        lower_balance=98_000.0,
+        max_trades=24,
+    )
 
     assert report.stage == "economic_validation"
-    assert report.passed is True
+    assert report.passed is (report.summary["terminal_p50"] > 0.0)
     assert report.summary["source_trade_count"] == study.context.state["oos_study_diagnostics"][
         "favorable_count"
     ]
-    assert report.summary["terminal_p05"] <= report.summary["terminal_p50"]
-    assert report.summary["terminal_p50"] <= report.summary["terminal_p95"]
-    assert report.summary["terminal_p50"] > 0.0
-    bootstrap_paths = np.asarray(
-        study.context.state["economic_study_diagnostics"]["bootstrap_paths"]
+    assert 0.0 <= report.summary["upper_hit_probability"] <= 1.0
+    assert 1.0 <= report.summary["median_resolution_trades"] <= 24.0
+    diagnostics = study.context.state["economic_study_diagnostics"]
+    selected = study.context.state["quarantine_scored_data"]["selected"].astype(bool)
+    roles = study.context.state["roles"]
+    expected_source = pd.to_numeric(
+        study.context.state["quarantine_scored_data"].loc[selected, roles.outcome],
+        errors="coerce",
+    ).dropna()
+    assert diagnostics["source_returns"] == pytest.approx(expected_source.tolist())
+    paths = np.asarray(diagnostics["account_balance_paths"], dtype=float)
+    states = diagnostics["resolution_states"]
+    resolution_trades = diagnostics["resolution_trades"]
+    assert paths.shape == (200, 25)
+    assert len(states) == len(resolution_trades) == 200
+    assert set(states) <= {"upper", "lower", "vertical"}
+    assert sum(diagnostics["state_counts"].values()) == 200
+    assert report.summary["upper_hit_probability"] == pytest.approx(
+        states.count("upper") / 200.0
     )
-    assert np.ptp(bootstrap_paths[:, -1]) > 0.0
-    geometry = study.context.state["economic_study_diagnostics"]["barrier_geometry"]
-    assert geometry["upper_barrier"] == pytest.approx(
-        geometry["entry_price"] * (1.0 + 0.01)
+    assert report.summary["median_resolution_trades"] == pytest.approx(
+        np.median(resolution_trades)
     )
-    assert geometry["lower_barrier"] == pytest.approx(
-        geometry["entry_price"] * (1.0 - 0.01)
-    )
-    assert geometry["vertical_x"] == 1
+    assert diagnostics["initial_balance"] == 100_000.0
+    upper = diagnostics["upper_balance"]
+    lower = diagnostics["lower_balance"]
+    for path, state, resolved_at in zip(paths, states, resolution_trades):
+        assert path[0] == pytest.approx(100_000.0)
+        terminal = path[int(resolved_at)]
+        if state == "upper":
+            assert terminal == pytest.approx(upper)
+        elif state == "lower":
+            assert terminal == pytest.approx(lower)
+        else:
+            assert resolved_at == 24
     assert Path(report.figure).name == "04_economic_monte_carlo.png"
     assert Path(report.figure).stat().st_size > 0

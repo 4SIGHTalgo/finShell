@@ -16,9 +16,9 @@ use finShell's internal names.
 ## Notebook Walkthrough
 
 This deterministic example creates an original triple-barrier classification
-label from synthetic OHLC data. The favorable path is deliberately constructed
-to clear the label audit so the complete API can be demonstrated. It is an API
-example, not evidence of a tradable edge.
+label from seeded mock OHLC data. The mock market has persistent latent signal,
+irregular noise, and a small adverse drift so its unfiltered equity is not a
+stylized sine wave. It is an API example, not evidence of a tradable edge.
 
 <!-- notebook-example:start -->
 
@@ -33,18 +33,26 @@ import numpy as np
 import pandas as pd
 import finshell as fs
 
-rows = 240
-signal = np.sin(np.linspace(0.0, 16.0 * np.pi, rows))
+rows = 480
+rng = np.random.default_rng(2024)
+signal = np.zeros(rows)
+innovations = rng.normal(0.0, 0.75, rows)
+for index in range(1, rows):
+    signal[index] = 0.82 * signal[index - 1] + innovations[index]
+signal = (signal - signal.mean()) / signal.std()
+market_noise = rng.normal(0.0, 0.004, rows - 1)
+next_returns = 0.0040 * np.tanh(signal[:-1]) + market_noise - 0.0010
 close = np.empty(rows)
 close[0] = 100.0
 for index in range(rows - 1):
-    close[index + 1] = close[index] * (1.0 + 0.012 * signal[index])
+    close[index + 1] = close[index] * (1.0 + next_returns[index])
+intrabar = np.abs(rng.normal(0.0012, 0.0005, rows))
 
 frame = pd.DataFrame({
     "event_time": pd.date_range("2024-01-01", periods=rows, freq="1h", tz="UTC"),
     "signal_feature": signal,
-    "high": close * 1.001,
-    "low": close * 0.999,
+    "high": close * (1.0 + intrabar),
+    "low": close * (1.0 - intrabar),
     "close": close,
     "side": np.ones(rows, dtype=int),
 })
@@ -56,7 +64,7 @@ study = fs.ValidationStudy(
     artifact_dir="assets/readme",
 )
 label = study.audit_label(
-    fs.TripleBarrierConfig(profit_take=0.01, stop_loss=0.01, vertical_bars=1),
+    fs.TripleBarrierConfig(profit_take=0.015, stop_loss=0.012, vertical_bars=8),
     null_tests=fs.NullTestConfig(
         random_simulations=300, stored_random_paths=40, random_seed=7
     ),
@@ -70,7 +78,7 @@ print(
 ```
 
 ```text
-passed=True favorable=48 real_total=0.4800 random_p95=0.1035 p_value=0.0000
+passed=True favorable=73 real_total=1.0950 random_p95=-0.1088 p_value=0.0000
 ```
 
 ![Label audit](assets/readme/plots/01_label_audit.png)
@@ -79,13 +87,14 @@ passed=True favorable=48 real_total=0.4800 random_p95=0.1035 p_value=0.0000
 
 `LogisticSelector` is fitted separately on every block-bootstrap training path.
 Validation and test rows are never included in those fits, and the final 20%
-quarantine remains sealed. The plot shows raw fold results with fitted bell
-curves for validation, test, and bootstrap distributions.
+quarantine remains sealed. The left panel shows the distribution across CPCV
+fold means. The right panel preserves the hierarchy: each CPCV permutation is a
+row containing its validation and test block-bootstrap distributions.
 
 ```python
 cv = study.fit_selector(
     fs.LogisticSelector(
-        features=["signal_feature"], threshold=0.40, random_state=13
+        features=["signal_feature"], threshold=0.30, random_state=13
     ),
     cpcv=fs.CPCVConfig(
         n_groups=6, holdout_groups=2, validate_groups=1, max_splits=4
@@ -102,7 +111,7 @@ print(
 ```
 
 ```text
-passed=True valid_bootstrap_fits=16 validate_return=0.0742 test_return=0.0886
+passed=True valid_bootstrap_fits=16 validate_return=0.0206 test_return=0.0589
 ```
 
 ![CPCV selector distributions](assets/readme/plots/02_cpcv_selector.png)
@@ -129,30 +138,39 @@ print(
 ```
 
 ```text
-passed=True selected=8 selected_total=0.0787 random_p95=0.0177 no_selector=-0.0976 p_value=0.0000
+passed=True selected=36 selected_total=0.3088 random_p95=0.1589 no_selector=0.1981 p_value=0.0000
 ```
 
 ![Out-of-sample selected-trade audit](assets/readme/plots/03_oos_audit.png)
 
 ### 4. Validate economic paths
 
-The last stage block-bootstraps only the selected quarantine outcomes. The left
-panel displays the configured horizontal profit/stop barriers and vertical time
-barrier. The right panel shows Monte Carlo paths with the pointwise median in
-black.
+The last stage block-bootstraps the selected OOS backtest outcomes into account-
+balance paths. Each path ends at the configured upper balance, lower balance,
+or trade-count horizon. The single chart reports the probability of every
+resolution state and the median number of trades to resolution.
 
 ```python
-economics = study.validate_economics(paths=300, block_bars=4, random_seed=23)
+economics = study.validate_economics(
+    paths=300,
+    block_bars=4,
+    random_seed=23,
+    initial_balance=100_000,
+    upper_balance=105_000,
+    lower_balance=95_000,
+    max_trades=12,
+)
 print(
     f"passed={economics.passed} paths={economics.summary['bootstrap_paths']} "
-    f"terminal_p05={economics.summary['terminal_p05']:.4f} "
-    f"terminal_p50={economics.summary['terminal_p50']:.4f} "
-    f"terminal_p95={economics.summary['terminal_p95']:.4f}"
+    f"upper_hit={economics.summary['upper_hit_probability']:.1%} "
+    f"lower_hit={economics.summary['lower_hit_probability']:.1%} "
+    f"vertical={economics.summary['vertical_probability']:.1%} "
+    f"median_resolution={economics.summary['median_resolution_trades']:.1f} trades"
 )
 ```
 
 ```text
-passed=True paths=300 terminal_p05=0.0787 terminal_p50=0.0800 terminal_p95=0.0800
+passed=True paths=300 upper_hit=89.7% lower_hit=1.0% vertical=9.3% median_resolution=5.0 trades
 ```
 
 ![Triple-barrier economic validation](assets/readme/plots/04_economic_monte_carlo.png)
@@ -168,6 +186,8 @@ passed=True paths=300 terminal_p05=0.0787 terminal_p50=0.0800 terminal_p95=0.080
 - Outcomes are additive per-event returns used for cumulative equity and path tests.
 - Randomized and bootstrap results are deterministic for a fixed seed.
 - Quarantine data is the final chronological 20% by default and is not used in CPCV.
+- Economic barrier paths resample contiguous selected-trade outcomes from the
+  OOS backtest and compound them from the configured initial account balance.
 
 Run the test suite with:
 
