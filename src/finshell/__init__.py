@@ -26,7 +26,7 @@ from finshell.risk_metrics import RiskMetrics, RiskMetricsConfig, compute_risk_m
 from finshell.study import LogisticSelector, StageOrderError, StageReport, ValidationStudy
 from finshell.triple_barrier import TripleBarrierComparator, TripleBarrierConfig
 
-__version__ = "0.3.1"
+__version__ = "0.3.3"
 
 __all__ = [
     "ColumnRoleMap",

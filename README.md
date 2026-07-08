@@ -2,16 +2,70 @@
 
 Python validation engine for financial labels and cross-validated selectors.
 
+finShell is a validation framework, not a signal generator or trading system.
+Passing finShell diagnostics does not imply live profitability.
+It is designed to reduce false confidence from overfit labels, selectors, and backtests.
+
+## Why finShell exists
+
+Financial ML experiments are easy to overfit. A label can look predictive because
+the researcher repeatedly changed horizons, barriers, features, filters, or
+thresholds after seeing historical results.
+
+finShell gives researchers a structured way to audit:
+
+1. whether a label beats random same-count paths,
+2. whether a selector survives purged CPCV and block bootstrap,
+3. whether selected quarantine trades beat random selection,
+4. whether selected outcomes survive economic path simulation.
+
 ## Installation
 
-```powershell
-python -m pip install .
+```bash
+python -m pip install finshell
 ```
 
 The standard installation includes plotting, CPCV, block bootstrap, null tests,
 triple-barrier labels, logistic selectors, and sealed out-of-sample validation.
 Input columns are mapped with `ColumnRoleMap`, so source schemas do not need to
 use finShell's internal names.
+
+For local development:
+
+```bash
+git clone https://github.com/4SIGHTalgo/finShell
+cd finShell
+python -m pip install -e ".[dev]"
+python -m pytest
+```
+
+## Quick start with real data
+
+```python
+import finshell as fs
+
+study = fs.ValidationStudy(
+    "my_ohlc_events.parquet",
+    roles=fs.ColumnRoleMap(
+        timestamp="timestamp",
+        high="high",
+        low="low",
+        close="close",
+        side="side",
+    ),
+)
+
+label = study.audit_label(
+    fs.TripleBarrierConfig(profit_take=0.015, stop_loss=0.010, vertical_bars=16),
+)
+
+cv = study.fit_selector(
+    fs.LogisticSelector(features=["volatility", "trend", "vix_change"], threshold=0.60),
+)
+
+oos = study.audit_oos()
+economics = study.validate_economics()
+```
 
 ## Notebook Walkthrough
 
@@ -81,7 +135,7 @@ print(
 passed=True favorable=73 real_total=1.0950 random_p95=-0.1088 p_value=0.0000
 ```
 
-![Label audit](assets/readme/plots/01_label_audit.png)
+![Label audit](https://raw.githubusercontent.com/4SIGHTalgo/finShell/main/assets/readme/plots/01_label_audit.png)
 
 ### 2. Fit inside CPCV folds
 
@@ -114,7 +168,7 @@ print(
 passed=True valid_bootstrap_fits=16 validate_return=0.0206 test_return=0.0589
 ```
 
-![CPCV selector distributions](assets/readme/plots/02_cpcv_selector.png)
+![CPCV selector distributions](https://raw.githubusercontent.com/4SIGHTalgo/finShell/main/assets/readme/plots/02_cpcv_selector.png)
 
 ### 3. Audit selected quarantine trades
 
@@ -141,7 +195,7 @@ print(
 passed=True selected=36 selected_total=0.3088 random_p95=0.1589 no_selector=0.1981 p_value=0.0000
 ```
 
-![Out-of-sample selected-trade audit](assets/readme/plots/03_oos_audit.png)
+![Out-of-sample selected-trade audit](https://raw.githubusercontent.com/4SIGHTalgo/finShell/main/assets/readme/plots/03_oos_audit.png)
 
 ### 4. Validate economic paths
 
@@ -173,7 +227,7 @@ print(
 passed=True paths=300 upper_hit=89.7% lower_hit=1.0% vertical=9.3% median_resolution=5.0 trades
 ```
 
-![Triple-barrier economic validation](assets/readme/plots/04_economic_monte_carlo.png)
+![Triple-barrier economic validation](https://raw.githubusercontent.com/4SIGHTalgo/finShell/main/assets/readme/plots/04_economic_monte_carlo.png)
 
 <!-- notebook-example:end -->
 

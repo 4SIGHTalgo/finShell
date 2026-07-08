@@ -70,11 +70,10 @@ def test_notebook_readme_cells_execute_and_match_outputs(tmp_path: Path, monkeyp
     ]
     assert all(fragment in section for fragment in expected_output_fragments)
 
-    image_paths = re.findall(r"!\[[^]]*\]\((assets/readme/[^)]+\.png)\)", section)
-    assert image_paths == [
-        "assets/readme/plots/01_label_audit.png",
-        "assets/readme/plots/02_cpcv_selector.png",
-        "assets/readme/plots/03_oos_audit.png",
-        "assets/readme/plots/04_economic_monte_carlo.png",
-    ]
-    assert all((project_root / relative_path).stat().st_size > 0 for relative_path in image_paths)
+    image_urls = re.findall(r"!\[[^]]*\]\(([^)]+\.png)\)", section)
+    assert len(image_urls) == 4
+    assert all("raw.githubusercontent.com/4SIGHTalgo/finShell/main/" in url for url in image_urls)
+    for url in image_urls:
+        filename = url.rsplit("/", maxsplit=1)[1]
+        local_path = project_root / "assets" / "readme" / "plots" / filename
+        assert local_path.stat().st_size > 0

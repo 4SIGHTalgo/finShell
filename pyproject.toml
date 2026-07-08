@@ -4,10 +4,31 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "finShell"
-version = "0.3.1"
+version = "0.3.3"
 description = "Model-free financial label and backtest validation engine."
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [
+  { name = "Paul Vega" },
+]
+license = "MIT"
+keywords = [
+  "finance",
+  "backtesting",
+  "cross-validation",
+  "cpcv",
+  "triple-barrier",
+  "financial-machine-learning",
+  "data-snooping",
+  "bootstrap",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+  "Intended Audience :: Financial and Insurance Industry",
+]
 dependencies = [
   "numpy>=2.0",
   "pandas>=2.2",
@@ -20,6 +41,12 @@ dependencies = [
 dev = [
   "pytest>=8.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/4SIGHTalgo/finShell"
+Repository = "https://github.com/4SIGHTalgo/finShell"
+Issues = "https://github.com/4SIGHTalgo/finShell/issues"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

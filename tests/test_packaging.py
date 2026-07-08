@@ -9,7 +9,7 @@ def test_plotting_is_a_core_package_dependency() -> None:
     payload = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
     project = payload["project"]
 
-    assert project["version"] == "0.3.1"
+    assert project["version"] == "0.3.3"
     assert "matplotlib>=3.9" in project["dependencies"]
     assert "scikit-learn>=1.5" in project["dependencies"]
     assert "plots" not in project.get("optional-dependencies", {})
