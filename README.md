@@ -1,4 +1,6 @@
 # finShell
+<img width="1254" height="1254" alt="ChatGPT Image Jul 9, 2026, 04_09_25 AM" src="https://github.com/user-attachments/assets/7a727763-a200-4b46-a2b1-e8e2e157b01c" />
+
 
 Python validation engine for financial labels and cross-validated selectors.
 
